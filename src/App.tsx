@@ -282,8 +282,8 @@ function App() {
     setCutoutInfo('正在加载本地模型并识别人物，首次使用会稍慢…')
     let resultUrl = ''
     try {
-      const blob = await cutOutPerson(source.image, 0.46)
-      resultUrl = URL.createObjectURL(blob)
+      const result = await cutOutPerson(source.image, 0.46)
+      resultUrl = URL.createObjectURL(result.blob)
       const image = new Image()
       await new Promise<void>((resolve, reject) => {
         image.onload = () => resolve()
@@ -299,7 +299,9 @@ function App() {
       resultUrl = ''
       setOptions((current) => ({ ...current, removeBackground: false }))
       setPreviewMode('pattern')
-      setCutoutInfo('已只保留人物；透明区域按画板色显示，不计入豆子数量')
+      setCutoutInfo(result.mode === 'cartoon-background'
+        ? '真人模型未识别，已自动切换卡通背景抠图；空白区域不计数'
+        : '已只保留人物；透明区域按画板色显示，不计入豆子数量')
     } catch (error) {
       if (resultUrl) URL.revokeObjectURL(resultUrl)
       console.warn(error)

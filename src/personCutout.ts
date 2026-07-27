@@ -1,11 +1,19 @@
 type WorkerResponse = {
   id: number
   blob?: Blob
+  mode?: CutoutMode
   error?: string
 }
 
+export type CutoutMode = 'ai-person' | 'cartoon-background'
+
+export interface PersonCutoutResult {
+  blob: Blob
+  mode: CutoutMode
+}
+
 type PendingRequest = {
-  resolve: (blob: Blob) => void
+  resolve: (result: PersonCutoutResult) => void
   reject: (error: Error) => void
   timer: number
 }
@@ -32,7 +40,7 @@ function getWorker() {
     if (!request) return
     pendingRequests.delete(data.id)
     window.clearTimeout(request.timer)
-    if (data.blob) request.resolve(data.blob)
+    if (data.blob && data.mode) request.resolve({ blob: data.blob, mode: data.mode })
     else request.reject(new Error(data.error || 'AI 抠图失败'))
   })
   worker.addEventListener('error', () => {
@@ -52,7 +60,7 @@ function resizedDimensions(image: HTMLImageElement) {
   }
 }
 
-export async function cutOutPerson(image: HTMLImageElement, threshold = 0.5) {
+export async function cutOutPerson(image: HTMLImageElement, threshold = 0.5): Promise<PersonCutoutResult> {
   if (!image.naturalWidth || !image.naturalHeight) throw new Error('原图尚未读取完成')
   const dimensions = resizedDimensions(image)
   const bitmap = await createImageBitmap(image, {
@@ -63,7 +71,7 @@ export async function cutOutPerson(image: HTMLImageElement, threshold = 0.5) {
   const id = nextRequestId++
   const assetBase = new URL(import.meta.env.BASE_URL, window.location.href).href
 
-  return new Promise<Blob>((resolve, reject) => {
+  return new Promise<PersonCutoutResult>((resolve, reject) => {
     const timer = window.setTimeout(() => {
       pendingRequests.delete(id)
       reject(new Error('AI 抠图超时，请换一张尺寸较小的图片重试'))

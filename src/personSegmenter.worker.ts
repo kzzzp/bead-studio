@@ -1,4 +1,5 @@
 import { FilesetResolver, ImageSegmenter, type ImageSegmenterResult } from '@mediapipe/tasks-vision'
+import { hasUsablePersonMask, removeSimpleBackgroundFromRgba } from './cartoonCutout.ts'
 import { applyPersonMaskToRgba } from './personMask.ts'
 
 // MediaPipe Web Image Segmenter setup and model contract:
@@ -15,6 +16,7 @@ type SegmentRequest = {
 type SegmentResponse = {
   id: number
   blob?: Blob
+  mode?: 'ai-person' | 'cartoon-background'
   error?: string
 }
 
@@ -52,16 +54,25 @@ function applySegmentationResult(
   // channel; two-channel builds place the person category at index 1.
   const personMask = masks?.[1] ?? masks?.[0]
   if (!personMask) throw new Error('模型没有返回人物蒙版')
+  const confidence = personMask.getAsFloat32Array()
+  if (!hasUsablePersonMask(confidence, threshold)) {
+    const fallback = removeSimpleBackgroundFromRgba(imageData.data, imageData.width, imageData.height)
+    if (!fallback.applied) {
+      throw new Error('没有识别到人物；这张图的背景较复杂，请尝试“去除边缘纯色背景”或换一张图')
+    }
+    return 'cartoon-background' as const
+  }
   applyPersonMaskToRgba(
     imageData.data,
     imageData.width,
     imageData.height,
-    personMask.getAsFloat32Array(),
+    confidence,
     personMask.width,
     personMask.height,
     threshold,
     0.14,
   )
+  return 'ai-person' as const
 }
 
 workerContext.addEventListener('message', async ({ data }) => {
@@ -75,9 +86,10 @@ workerContext.addEventListener('message', async ({ data }) => {
     const imageData = context.getImageData(0, 0, canvas.width, canvas.height)
     const segmenter = await getSegmenter(assetBase)
 
+    let mode: SegmentResponse['mode']
     segmenter.segment(canvas, (result) => {
       try {
-        applySegmentationResult(result, imageData, threshold)
+        mode = applySegmentationResult(result, imageData, threshold)
       } finally {
         result.close()
       }
@@ -85,7 +97,7 @@ workerContext.addEventListener('message', async ({ data }) => {
 
     context.putImageData(imageData, 0, 0)
     const blob = await canvas.convertToBlob({ type: 'image/png' })
-    workerContext.postMessage({ id, blob })
+    workerContext.postMessage({ id, blob, mode })
   } catch (error) {
     image.close()
     workerContext.postMessage({
