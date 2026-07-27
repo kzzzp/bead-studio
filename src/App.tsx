@@ -22,6 +22,7 @@ import {
 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import JSZip from 'jszip'
+import { createFullExportPlan } from './exportSizing'
 import { processImage, type BeadPattern, type ProcessOptions } from './imageProcessing'
 import { canvasToPngBlob, createPatternSvg, downloadBlob, downloadCanvas, downloadText, drawPattern } from './patternRenderer'
 
@@ -248,22 +249,31 @@ function App() {
     setSource(null)
   }
 
-  const exportOverview = () => {
-    if (!pattern) return
-    const canvas = document.createElement('canvas')
-    const maxDimension = Math.max(pattern.width, pattern.height)
-    const exportRatio = maxDimension <= 36 ? 4 : maxDimension <= 60 ? 3 : maxDimension <= 80 ? 2 : 1
-    drawPattern(canvas, pattern, {
-      cellSize: 40,
-      coordinates: true,
-      codes: true,
-      grid: true,
-      boardLines,
-      legend: true,
-      pixelRatio: exportRatio,
-    })
-    setExportInfo(`已生成 ${canvas.width} × ${canvas.height}px PNG`)
-    downloadCanvas(canvas, '拼豆坐标图纸-超清.png')
+  const exportFullPattern = async () => {
+    if (!pattern || isExporting) return
+    setIsExporting(true)
+    try {
+      const plan = createFullExportPlan(pattern.width, pattern.height, pattern.usage.length)
+      const canvas = document.createElement('canvas')
+      drawPattern(canvas, pattern, {
+        cellSize: plan.cellSize,
+        coordinates: true,
+        codes: true,
+        grid: true,
+        boardLines,
+        legend: true,
+        pixelRatio: 1,
+        pixelText: true,
+      })
+      const blob = await canvasToPngBlob(canvas)
+      downloadBlob(blob, `拼豆完整高清图纸-${pattern.width}x${pattern.height}.png`)
+      setExportInfo(`已生成单张完整 PNG · ${canvas.width} × ${canvas.height}px · 每格 ${plan.cellSize}px`)
+    } catch (error) {
+      console.error(error)
+      window.alert('完整 PNG 生成失败，当前设备内存可能不足；请改用 SVG 无损图。')
+    } finally {
+      setIsExporting(false)
+    }
   }
 
   const exportPagedPattern = async () => {
@@ -505,13 +515,13 @@ function App() {
 
               <div className="export-card">
                 <h3>导出你的图纸</h3>
-                <p>清晰模式按29×29格分页，保证色号在适应窗口时仍然可读。</p>
-                <button type="button" className="export-primary" onClick={exportPagedPattern} disabled={isExporting}><Download size={16} /> {isExporting ? '正在生成分页图…' : '下载清晰分页图'}</button>
+                <p>默认导出一张完整高清图，不拆分；SVG 可无损放大，分页图仅用于分板打印。</p>
+                <button type="button" className="export-primary" onClick={exportFullPattern} disabled={isExporting}><Download size={16} /> {isExporting ? '正在生成图纸…' : '下载完整高清图'}</button>
                 {exportInfo && <span className="export-status"><Check size={13} /> {exportInfo}</span>}
                 <div>
-                  <button type="button" onClick={exportOverview}><ImageIcon size={14} /> 整图总览</button>
-                  <button type="button" onClick={exportSvg}><FileCode2 size={14} /> SVG 矢量图</button>
-                  <button type="button" onClick={() => downloadCsv(pattern)}><FileDown size={14} /> CSV 清单</button>
+                  <button type="button" onClick={exportSvg} disabled={isExporting}><FileCode2 size={14} /> SVG 无损图</button>
+                  <button type="button" onClick={exportPagedPattern} disabled={isExporting}><ImageIcon size={14} /> 分页打印</button>
+                  <button type="button" onClick={() => downloadCsv(pattern)} disabled={isExporting}><FileDown size={14} /> CSV 清单</button>
                 </div>
               </div>
             </>
