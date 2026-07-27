@@ -1,0 +1,17 @@
+node_modules/
+dist/
+
+# Build and development output
+*.log
+*.tsbuildinfo
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# Editor and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
