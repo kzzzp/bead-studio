@@ -2,6 +2,8 @@ node_modules/
 dist/
 .playwright-cli/
 output/playwright/
+public/mediapipe/wasm/vision_wasm_internal.*
+public/mediapipe/wasm/vision_wasm_nosimd_internal.*
 
 # Build and development output
 *.log
