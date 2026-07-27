@@ -19,4 +19,10 @@ describe('createFullExportPlan', () => {
     assert.equal(plan.pixelWidth, 4_320)
     assert.equal(plan.pixelHeight, 4_100)
   })
+
+  it('uses readable canvas text instead of oversized pixel glyphs', () => {
+    const plan = createFullExportPlan(40, 40, 18)
+
+    assert.equal(plan.pixelText, false)
+  })
 })

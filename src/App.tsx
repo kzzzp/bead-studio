@@ -263,7 +263,7 @@ function App() {
         boardLines,
         legend: true,
         pixelRatio: 1,
-        pixelText: true,
+        pixelText: plan.pixelText,
       })
       const blob = await canvasToPngBlob(canvas)
       downloadBlob(blob, `拼豆完整高清图纸-${pattern.width}x${pattern.height}.png`)

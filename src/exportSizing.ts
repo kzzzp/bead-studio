@@ -7,6 +7,7 @@ export type FullExportPlan = {
   cellSize: number
   pixelWidth: number
   pixelHeight: number
+  pixelText: boolean
 }
 
 function measureExport(width: number, height: number, colorCount: number, cellSize: number): FullExportPlan {
@@ -19,6 +20,7 @@ function measureExport(width: number, height: number, colorCount: number, cellSi
     cellSize,
     pixelWidth,
     pixelHeight: Math.max(patternHeight, legendHeight),
+    pixelText: false,
   }
 }
 
