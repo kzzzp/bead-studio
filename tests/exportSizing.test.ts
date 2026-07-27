@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import { createFullExportPlan } from '../src/exportSizing.ts'
+import { measurePatternLayout } from '../src/patternLayout.ts'
 
 describe('createFullExportPlan', () => {
   it('keeps a 120 × 120 pattern in one clear, browser-safe image', () => {
@@ -27,5 +28,20 @@ describe('createFullExportPlan', () => {
     const plan = createFullExportPlan(40, 40, 18)
 
     assert.equal(plan.pixelText, false)
+  })
+
+  it('reserves large, readable cards for the bottom color legend', () => {
+    const layout = measurePatternLayout(40, 41, 18, {
+      cellSize: 96,
+      coordinates: true,
+      title: false,
+      legend: true,
+      legendPosition: 'bottom',
+    })
+
+    assert.ok(layout.legendCardHeight >= 86)
+    assert.ok(layout.legendCardWidth >= 340)
+    assert.ok(layout.legendColumns <= 10)
+    assert.equal(layout.legendRows, 2)
   })
 })

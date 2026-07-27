@@ -67,13 +67,13 @@ export function measurePatternLayout(
   }
 
   if (options.legendPosition === 'bottom') {
-    const legendGap = Math.ceil(Math.max(12, options.cellSize * 0.18))
-    const legendTitleHeight = Math.ceil(Math.max(30, options.cellSize * 0.45))
-    const targetCardWidth = Math.ceil(Math.max(150, options.cellSize * 2.35))
+    const legendGap = Math.ceil(Math.max(16, options.cellSize * 0.22))
+    const legendTitleHeight = Math.ceil(Math.max(40, options.cellSize * 0.58))
+    const targetCardWidth = Math.ceil(Math.max(280, options.cellSize * 3.65))
     const legendColumns = Math.max(1, Math.min(colorCount || 1, Math.floor((gridWidth + legendGap) / (targetCardWidth + legendGap))))
     const legendRows = colorCount ? Math.ceil(colorCount / legendColumns) : 0
     const legendCardWidth = Math.floor((gridWidth - legendGap * (legendColumns - 1)) / legendColumns)
-    const legendCardHeight = Math.ceil(Math.max(40, options.cellSize * 0.6))
+    const legendCardHeight = Math.ceil(Math.max(64, options.cellSize * 0.92))
     const cardsHeight = legendRows
       ? legendRows * legendCardHeight + (legendRows - 1) * legendGap
       : 0

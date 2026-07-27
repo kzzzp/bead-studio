@@ -203,7 +203,7 @@ export function drawPattern(canvas: HTMLCanvasElement, pattern: BeadPattern, opt
     context.textAlign = 'left'
     if (legendPosition === 'bottom') {
       context.fillStyle = '#272822'
-      context.font = `800 ${Math.max(16, options.cellSize * 0.24)}px system-ui, sans-serif`
+      context.font = `800 ${Math.max(20, options.cellSize * 0.32)}px system-ui, sans-serif`
       context.fillText(`用豆清单 · ${pattern.usage.length} 色 · 共 ${pattern.totalBeads} 颗`, layout.legendX, layout.legendY + layout.legendTitleHeight / 2)
 
       const cardsY = layout.legendY + layout.legendTitleHeight + layout.legendGap
@@ -224,10 +224,10 @@ export function drawPattern(canvas: HTMLCanvasElement, pattern: BeadPattern, opt
         context.stroke()
 
         context.fillStyle = textColor
-        context.font = `900 ${Math.max(14, layout.legendCardHeight * 0.38)}px ui-monospace, SFMono-Regular, Consolas, monospace`
+        context.font = `900 ${Math.max(22, layout.legendCardHeight * 0.5)}px ui-monospace, SFMono-Regular, Consolas, monospace`
         context.fillText(item.color.code, x + layout.legendCardHeight * 0.28, y + layout.legendCardHeight / 2)
         context.textAlign = 'right'
-        context.font = `700 ${Math.max(12, layout.legendCardHeight * 0.29)}px system-ui, sans-serif`
+        context.font = `800 ${Math.max(18, layout.legendCardHeight * 0.34)}px system-ui, sans-serif`
         context.fillText(`${item.count} 颗`, x + layout.legendCardWidth - layout.legendCardHeight * 0.25, y + layout.legendCardHeight / 2)
         context.textAlign = 'left'
       })
