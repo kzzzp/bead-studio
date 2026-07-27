@@ -22,7 +22,9 @@ import {
 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import JSZip from 'jszip'
+import { createFullExportPlan } from './exportSizing'
 import { processImage, type BeadPattern, type ProcessOptions } from './imageProcessing'
+import { cutOutPerson } from './personCutout'
 import { canvasToPngBlob, createPatternSvg, downloadBlob, downloadCanvas, downloadText, drawPattern } from './patternRenderer'
 
 type SourceImage = {
@@ -175,6 +177,7 @@ function cropPattern(pattern: BeadPattern, startX: number, startY: number, width
 
 function App() {
   const [source, setSource] = useState<SourceImage | null>(null)
+  const [cutout, setCutout] = useState<SourceImage | null>(null)
   const [options, setOptions] = useState(DEFAULT_OPTIONS)
   const [lockedRatio, setLockedRatio] = useState(true)
   const [previewMode, setPreviewMode] = useState<PreviewMode>('pattern')
@@ -184,12 +187,16 @@ function App() {
   const [dragging, setDragging] = useState(false)
   const [exportInfo, setExportInfo] = useState('')
   const [isExporting, setIsExporting] = useState(false)
+  const [isCuttingOut, setIsCuttingOut] = useState(false)
+  const [cutoutInfo, setCutoutInfo] = useState('')
   const fileRef = useRef<HTMLInputElement>(null)
+  const cutoutRequestRef = useRef(0)
+  const patternSource = cutout ?? source
 
   const pattern = useMemo(() => {
-    if (!source) return null
-    return processImage(source.image, options)
-  }, [source, options])
+    if (!patternSource) return null
+    return processImage(patternSource.image, options)
+  }, [patternSource, options])
 
   const updateOption = <K extends keyof ProcessOptions>(key: K, value: ProcessOptions[K]) => {
     setOptions((current) => ({ ...current, [key]: value }))
@@ -209,6 +216,13 @@ function App() {
   const loadUrl = (url: string, name: string) => {
     const image = new Image()
     image.onload = () => {
+      cutoutRequestRef.current += 1
+      setCutout((old) => {
+        if (old?.url.startsWith('blob:')) URL.revokeObjectURL(old.url)
+        return null
+      })
+      setIsCuttingOut(false)
+      setCutoutInfo('')
       setSource((old) => {
         if (old?.url.startsWith('blob:')) URL.revokeObjectURL(old.url)
         return { image, url, name }
@@ -244,26 +258,89 @@ function App() {
   }
 
   const clearSource = () => {
+    cutoutRequestRef.current += 1
     if (source?.url.startsWith('blob:')) URL.revokeObjectURL(source.url)
+    if (cutout?.url.startsWith('blob:')) URL.revokeObjectURL(cutout.url)
+    setCutout(null)
     setSource(null)
+    setIsCuttingOut(false)
+    setCutoutInfo('')
   }
 
-  const exportOverview = () => {
-    if (!pattern) return
-    const canvas = document.createElement('canvas')
-    const maxDimension = Math.max(pattern.width, pattern.height)
-    const exportRatio = maxDimension <= 36 ? 4 : maxDimension <= 60 ? 3 : maxDimension <= 80 ? 2 : 1
-    drawPattern(canvas, pattern, {
-      cellSize: 40,
-      coordinates: true,
-      codes: true,
-      grid: true,
-      boardLines,
-      legend: true,
-      pixelRatio: exportRatio,
-    })
-    setExportInfo(`已生成 ${canvas.width} × ${canvas.height}px PNG`)
-    downloadCanvas(canvas, '拼豆坐标图纸-超清.png')
+  const togglePersonCutout = async () => {
+    if (!source || isCuttingOut) return
+    if (cutout) {
+      if (cutout.url.startsWith('blob:')) URL.revokeObjectURL(cutout.url)
+      setCutout(null)
+      setCutoutInfo('已恢复完整图片')
+      return
+    }
+
+    const requestId = cutoutRequestRef.current + 1
+    cutoutRequestRef.current = requestId
+    setIsCuttingOut(true)
+    setCutoutInfo('正在加载本地模型并识别人物，首次使用会稍慢…')
+    let resultUrl = ''
+    try {
+      const result = await cutOutPerson(source.image, 0.46)
+      resultUrl = URL.createObjectURL(result.blob)
+      const image = new Image()
+      await new Promise<void>((resolve, reject) => {
+        image.onload = () => resolve()
+        image.onerror = () => reject(new Error('抠图结果读取失败'))
+        image.src = resultUrl
+      })
+      if (cutoutRequestRef.current !== requestId) {
+        URL.revokeObjectURL(resultUrl)
+        resultUrl = ''
+        return
+      }
+      setCutout({ image, url: resultUrl, name: `${source.name} · AI 抠图` })
+      resultUrl = ''
+      setOptions((current) => ({ ...current, removeBackground: false }))
+      setPreviewMode('pattern')
+      setCutoutInfo(result.mode === 'cartoon-background'
+        ? '真人模型未识别，已自动切换卡通背景抠图；空白区域不计数'
+        : '已只保留人物；透明区域按画板色显示，不计入豆子数量')
+    } catch (error) {
+      if (resultUrl) URL.revokeObjectURL(resultUrl)
+      console.warn(error)
+      if (cutoutRequestRef.current === requestId) {
+        setCutoutInfo(error instanceof Error ? error.message : 'AI 抠图失败，请换一张图片重试')
+      }
+    } finally {
+      if (cutoutRequestRef.current === requestId) setIsCuttingOut(false)
+    }
+  }
+
+  const exportFullPattern = async () => {
+    if (!pattern || isExporting) return
+    setIsExporting(true)
+    try {
+      const plan = createFullExportPlan(pattern.width, pattern.height, pattern.usage.length)
+      const canvas = document.createElement('canvas')
+      drawPattern(canvas, pattern, {
+        cellSize: plan.cellSize,
+        coordinates: true,
+        codes: true,
+        grid: true,
+        boardLines,
+        legend: true,
+        pixelRatio: 1,
+        pixelText: plan.pixelText,
+        legendPosition: plan.legendPosition,
+        coordinateFontScale: plan.coordinateFontScale,
+        codeFontScale: plan.codeFontScale,
+      })
+      const blob = await canvasToPngBlob(canvas)
+      downloadBlob(blob, `拼豆完整高清图纸-${pattern.width}x${pattern.height}.png`)
+      setExportInfo(`已生成单张完整 PNG · ${canvas.width} × ${canvas.height}px · 每格 ${plan.cellSize}px`)
+    } catch (error) {
+      console.error(error)
+      window.alert('完整 PNG 生成失败，当前设备内存可能不足；请改用 SVG 无损图。')
+    } finally {
+      setIsExporting(false)
+    }
   }
 
   const exportPagedPattern = async () => {
@@ -394,8 +471,11 @@ function App() {
             </div>
           ) : (
             <div className="source-card">
-              <img src={source.url} alt="已上传原图" />
-              <div><strong title={source.name}>{source.name}</strong><span>{source.image.naturalWidth} × {source.image.naturalHeight}px</span></div>
+              <img src={patternSource?.url} alt={cutout ? 'AI 抠图预览' : '已上传原图'} />
+              <div>
+                <strong title={source.name}>{source.name}</strong>
+                <span>{source.image.naturalWidth} × {source.image.naturalHeight}px{cutout ? ' · 已抠图' : ''}</span>
+              </div>
               <button type="button" onClick={() => fileRef.current?.click()}><RotateCcw size={14} /> 更换</button>
               <input ref={fileRef} type="file" accept="image/*" hidden onChange={(event) => loadFile(event.target.files?.[0])} />
             </div>
@@ -429,6 +509,18 @@ function App() {
             <Toggle label="去除边缘纯色背景" checked={options.removeBackground} onChange={(value) => updateOption('removeBackground', value)} />
             {options.removeBackground && <RangeControl label="去背容差" value={options.backgroundTolerance} min={5} max={60} onChange={(value) => updateOption('backgroundTolerance', value)} />}
           </section>
+
+          <section className={`settings-section ${!source ? 'is-muted' : ''}`}>
+            <div className="section-title"><span><WandSparkles size={16} /> AI 人物抠图</span><em>本机运行</em></div>
+            <div className={`cutout-card ${cutout ? 'is-active' : ''}`}>
+              <p>自动只保留人物；外部区域显示白色画板，但没有色号，也不计入用豆数量。</p>
+              <button type="button" onClick={togglePersonCutout} disabled={isCuttingOut}>
+                <Sparkles size={15} />
+                {isCuttingOut ? '正在识别人物…' : cutout ? '恢复完整图片' : '一键只保留人物'}
+              </button>
+              <small role="status" aria-live="polite">{cutoutInfo || '首次使用需加载约 12 MB 的本地模型'}</small>
+            </div>
+          </section>
         </aside>
 
         <section className="preview-panel panel">
@@ -460,7 +552,7 @@ function App() {
                 <button type="button" className="ghost-button" onClick={loadSample}><WandSparkles size={16} /> 查看示例效果</button>
               </div>
             ) : previewMode === 'original' ? (
-              <div className="original-preview"><img src={source.url} alt="原图预览" /></div>
+              <div className={`original-preview ${cutout ? 'has-transparency' : ''}`}><img src={patternSource?.url} alt={cutout ? 'AI 抠图结果预览' : '原图预览'} /></div>
             ) : (
               <div className="canvas-scroll">
                 <PatternPreview pattern={pattern} mode={previewMode} showCodes={showCodes} boardLines={boardLines} zoom={zoom} />
@@ -469,7 +561,7 @@ function App() {
           </div>
           {pattern && (
             <div className="stage-status">
-              <span><i className="status-dot" /> 已按 MARD 色卡完成匹配</span>
+              <span><i className="status-dot" /> {cutout ? 'AI 已抠图 · 空白格不计数' : '已按 MARD 色卡完成匹配'}</span>
               <span>{pattern.width} × {pattern.height} 格</span>
             </div>
           )}
@@ -505,13 +597,13 @@ function App() {
 
               <div className="export-card">
                 <h3>导出你的图纸</h3>
-                <p>清晰模式按29×29格分页，保证色号在适应窗口时仍然可读。</p>
-                <button type="button" className="export-primary" onClick={exportPagedPattern} disabled={isExporting}><Download size={16} /> {isExporting ? '正在生成分页图…' : '下载清晰分页图'}</button>
+                <p>默认导出一张完整高清图，不拆分；SVG 可无损放大，分页图仅用于分板打印。</p>
+                <button type="button" className="export-primary" onClick={exportFullPattern} disabled={isExporting}><Download size={16} /> {isExporting ? '正在生成图纸…' : '下载完整高清图'}</button>
                 {exportInfo && <span className="export-status"><Check size={13} /> {exportInfo}</span>}
                 <div>
-                  <button type="button" onClick={exportOverview}><ImageIcon size={14} /> 整图总览</button>
-                  <button type="button" onClick={exportSvg}><FileCode2 size={14} /> SVG 矢量图</button>
-                  <button type="button" onClick={() => downloadCsv(pattern)}><FileDown size={14} /> CSV 清单</button>
+                  <button type="button" onClick={exportSvg} disabled={isExporting}><FileCode2 size={14} /> SVG 无损图</button>
+                  <button type="button" onClick={exportPagedPattern} disabled={isExporting}><ImageIcon size={14} /> 分页打印</button>
+                  <button type="button" onClick={() => downloadCsv(pattern)} disabled={isExporting}><FileDown size={14} /> CSV 清单</button>
                 </div>
               </div>
             </>

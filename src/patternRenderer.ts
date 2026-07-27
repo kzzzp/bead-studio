@@ -1,4 +1,5 @@
 import type { BeadPattern } from './imageProcessing'
+import { measurePatternLayout, type LegendPosition } from './patternLayout.ts'
 
 export interface DrawOptions {
   cellSize: number
@@ -12,6 +13,9 @@ export interface DrawOptions {
   coordinateOffsetX?: number
   coordinateOffsetY?: number
   pixelText?: boolean
+  legendPosition?: LegendPosition
+  coordinateFontScale?: number
+  codeFontScale?: number
 }
 
 const PIXEL_GLYPHS: Record<string, string[]> = {
@@ -72,13 +76,15 @@ const contrastColor = (hex: string) => {
 }
 
 export function drawPattern(canvas: HTMLCanvasElement, pattern: BeadPattern, options: DrawOptions) {
-  const margin = options.coordinates ? Math.ceil(Math.max(28, options.cellSize * 1.35)) : 0
-  const header = options.title ? 54 : 0
-  const legendWidth = options.legend ? 220 : 0
-  const width = margin * 2 + pattern.width * options.cellSize + legendWidth
-  const patternHeight = header + margin * 2 + pattern.height * options.cellSize
-  const legendHeight = options.legend ? header + margin * 2 + 44 + pattern.usage.length * 23 : 0
-  const height = Math.max(patternHeight, legendHeight)
+  const legendPosition = options.legendPosition ?? 'right'
+  const layout = measurePatternLayout(pattern.width, pattern.height, pattern.usage.length, {
+    cellSize: options.cellSize,
+    coordinates: options.coordinates,
+    title: Boolean(options.title),
+    legend: Boolean(options.legend),
+    legendPosition,
+  })
+  const { width, height, margin, header, originX, originY } = layout
   const pixelRatio = Math.max(1, options.pixelRatio ?? 1)
   canvas.width = Math.ceil(width * pixelRatio)
   canvas.height = Math.ceil(height * pixelRatio)
@@ -103,8 +109,6 @@ export function drawPattern(canvas: HTMLCanvasElement, pattern: BeadPattern, opt
     context.textAlign = 'center'
   }
 
-  const originX = margin
-  const originY = header + margin
   for (let y = 0; y < pattern.height; y += 1) {
     for (let x = 0; x < pattern.width; x += 1) {
       const cell = pattern.cells[y * pattern.width + x]
@@ -119,7 +123,8 @@ export function drawPattern(canvas: HTMLCanvasElement, pattern: BeadPattern, opt
           drawPixelText(context, cell.color.code, px + options.cellSize / 2, py + options.cellSize / 2, contrastColor(cell.color.hex), moduleSize)
         } else {
           context.fillStyle = contrastColor(cell.color.hex)
-          context.font = `800 ${Math.max(11, options.cellSize * 0.46)}px ui-monospace, SFMono-Regular, Consolas, monospace`
+          const codeFontSize = Math.max(11, options.cellSize * (options.codeFontScale ?? 0.46))
+          context.font = `900 ${codeFontSize}px ui-monospace, SFMono-Regular, Consolas, monospace`
           context.fillText(cell.color.code, px + options.cellSize / 2, py + options.cellSize / 2 + 0.5)
         }
       }
@@ -165,8 +170,11 @@ export function drawPattern(canvas: HTMLCanvasElement, pattern: BeadPattern, opt
     const offsetX = options.coordinateOffsetX ?? 0
     const offsetY = options.coordinateOffsetY ?? 0
     const coordinateModule = Math.max(2, Math.min(4, Math.floor(options.cellSize / 12)))
+    const coordinateFontSize = options.coordinateFontScale
+      ? Math.max(12, options.cellSize * options.coordinateFontScale)
+      : Math.max(12, Math.min(18, options.cellSize * 0.48))
     context.fillStyle = '#565750'
-    context.font = `700 ${Math.max(12, Math.min(18, options.cellSize * 0.48))}px system-ui, sans-serif`
+    context.font = `800 ${coordinateFontSize}px system-ui, sans-serif`
     for (let x = 0; x < pattern.width; x += 1) {
       const px = originX + x * options.cellSize + options.cellSize / 2
       const value = String(x + 1 + offsetX)
@@ -192,26 +200,57 @@ export function drawPattern(canvas: HTMLCanvasElement, pattern: BeadPattern, opt
   }
 
   if (options.legend) {
-    const legendX = originX + pattern.width * options.cellSize + margin + 18
-    let y = header + margin
     context.textAlign = 'left'
-    context.fillStyle = '#272822'
-    context.font = '700 14px system-ui, sans-serif'
-    context.fillText('用豆清单', legendX, y + 8)
-    y += 32
-    for (const item of pattern.usage) {
-      context.fillStyle = item.color.hex
-      context.beginPath()
-      context.arc(legendX + 7, y, 7, 0, Math.PI * 2)
-      context.fill()
-      context.fillStyle = '#30312c'
-      context.font = '600 12px ui-monospace, SFMono-Regular, Consolas, monospace'
-      context.fillText(item.color.code, legendX + 22, y)
-      context.fillStyle = '#77766e'
-      context.font = '12px system-ui, sans-serif'
-      context.fillText(`${item.count} 颗`, legendX + 78, y)
-      y += 23
-      if (y > height - 18) break
+    if (legendPosition === 'bottom') {
+      context.fillStyle = '#272822'
+      context.font = `800 ${Math.max(20, options.cellSize * 0.32)}px system-ui, sans-serif`
+      context.fillText(`用豆清单 · ${pattern.usage.length} 色 · 共 ${pattern.totalBeads} 颗`, layout.legendX, layout.legendY + layout.legendTitleHeight / 2)
+
+      const cardsY = layout.legendY + layout.legendTitleHeight + layout.legendGap
+      pattern.usage.forEach((item, index) => {
+        const column = index % layout.legendColumns
+        const row = Math.floor(index / layout.legendColumns)
+        const x = layout.legendX + column * (layout.legendCardWidth + layout.legendGap)
+        const y = cardsY + row * (layout.legendCardHeight + layout.legendGap)
+        const textColor = contrastColor(item.color.hex)
+        const radius = Math.max(5, Math.min(12, layout.legendCardHeight * 0.18))
+
+        context.fillStyle = item.color.hex
+        context.beginPath()
+        context.roundRect(x, y, layout.legendCardWidth, layout.legendCardHeight, radius)
+        context.fill()
+        context.strokeStyle = 'rgba(45, 45, 40, .16)'
+        context.lineWidth = 1
+        context.stroke()
+
+        context.fillStyle = textColor
+        context.font = `900 ${Math.max(22, layout.legendCardHeight * 0.5)}px ui-monospace, SFMono-Regular, Consolas, monospace`
+        context.fillText(item.color.code, x + layout.legendCardHeight * 0.28, y + layout.legendCardHeight / 2)
+        context.textAlign = 'right'
+        context.font = `800 ${Math.max(18, layout.legendCardHeight * 0.34)}px system-ui, sans-serif`
+        context.fillText(`${item.count} 颗`, x + layout.legendCardWidth - layout.legendCardHeight * 0.25, y + layout.legendCardHeight / 2)
+        context.textAlign = 'left'
+      })
+    } else {
+      let y = layout.legendY
+      context.fillStyle = '#272822'
+      context.font = '700 14px system-ui, sans-serif'
+      context.fillText('用豆清单', layout.legendX, y + 8)
+      y += 32
+      for (const item of pattern.usage) {
+        context.fillStyle = item.color.hex
+        context.beginPath()
+        context.arc(layout.legendX + 7, y, 7, 0, Math.PI * 2)
+        context.fill()
+        context.fillStyle = '#30312c'
+        context.font = '600 12px ui-monospace, SFMono-Regular, Consolas, monospace'
+        context.fillText(item.color.code, layout.legendX + 22, y)
+        context.fillStyle = '#77766e'
+        context.font = '12px system-ui, sans-serif'
+        context.fillText(`${item.count} 颗`, layout.legendX + 78, y)
+        y += 23
+        if (y > height - 18) break
+      }
     }
   }
 }

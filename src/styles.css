@@ -100,6 +100,14 @@ button:focus-visible, input:focus-visible { outline: 3px solid rgba(71, 114, 93,
 .toggle i { width: 13px; height: 13px; display: block; border-radius: 50%; background: white; box-shadow: 0 1px 3px rgba(0, 0, 0, .2); transition: .2s; }
 .toggle.is-on { justify-content: flex-end; background: var(--sage); }
 
+.cutout-card { padding: 12px; border: 1px solid #dfe3dd; border-radius: 9px; background: #f8faf7; }
+.cutout-card.is-active { border-color: #a9c3b4; background: #edf5ef; }
+.cutout-card p { margin: 0 0 10px; color: #777970; font-size: 11px; line-height: 1.65; }
+.cutout-card button { width: 100%; min-height: 36px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; color: white; border: 0; border-radius: 7px; background: var(--sage); font-size: 12px; font-weight: 700; cursor: pointer; }
+.cutout-card button:disabled { cursor: wait; opacity: .68; }
+.cutout-card.is-active button { color: var(--sage-dark); border: 1px solid #b9cdbf; background: white; }
+.cutout-card small { min-height: 30px; margin-top: 8px; display: block; color: #78867d; font-size: 9px; line-height: 1.55; }
+
 .preview-panel { min-width: 0; display: flex; flex-direction: column; background: #e9e7e0; }
 .preview-toolbar { height: 58px; flex: 0 0 58px; padding: 0 16px; display: flex; align-items: center; justify-content: space-between; gap: 10px; border-bottom: 1px solid #d7d5ce; background: #f9f8f4; }
 .preview-actions { display: flex; align-items: center; gap: 8px; }
@@ -124,6 +132,7 @@ button:focus-visible, input:focus-visible { outline: 3px solid rgba(71, 114, 93,
 .canvas-scroll { position: absolute; inset: 0; padding: 32px; overflow: auto; display: flex; align-items: flex-start; justify-content: flex-start; }
 .pattern-canvas { margin: auto; display: block; background: white; box-shadow: 0 16px 35px rgba(55, 54, 49, .16); image-rendering: auto; }
 .original-preview { position: absolute; inset: 0; padding: 35px; display: grid; place-items: center; overflow: auto; }
+.original-preview.has-transparency { background-color: #f5f4ef; background-image: linear-gradient(45deg, #deddd6 25%, transparent 25%), linear-gradient(-45deg, #deddd6 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #deddd6 75%), linear-gradient(-45deg, transparent 75%, #deddd6 75%); background-position: 0 0, 0 8px, 8px -8px, -8px 0; background-size: 16px 16px; }
 .original-preview img { max-width: 100%; max-height: 100%; object-fit: contain; border: 10px solid white; box-shadow: 0 16px 35px rgba(55, 54, 49, .16); }
 .stage-status { height: 38px; flex: 0 0 38px; padding: 0 16px; display: flex; align-items: center; justify-content: space-between; color: #888a82; border-top: 1px solid #d7d5ce; background: #f7f6f2; font-size: 11px; }
 .stage-status > span:first-child { display: inline-flex; align-items: center; gap: 6px; }
