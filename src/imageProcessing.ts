@@ -1,4 +1,4 @@
-import { MARD_PALETTE, rgbToLab, type BeadColor, type Lab, type RGB } from './palette'
+import { MARD_PALETTE, rgbToLab, type BeadColor, type Lab, type RGB } from './palette.ts'
 
 export interface ProcessOptions {
   width: number
@@ -29,6 +29,12 @@ export interface BeadPattern {
   cells: PatternCell[]
   usage: ColorUsage[]
   totalBeads: number
+}
+
+export interface PixelImageData {
+  width: number
+  height: number
+  data: Uint8ClampedArray
 }
 
 const labDistanceSq = (a: Lab, b: Lab) => {
@@ -208,8 +214,11 @@ function sampleImage(image: HTMLImageElement, options: ProcessOptions) {
   return context.getImageData(0, 0, options.width, options.height)
 }
 
-export function processImage(image: HTMLImageElement, options: ProcessOptions): BeadPattern {
-  const imageData = sampleImage(image, options)
+export function processImageData(imageData: PixelImageData, options: ProcessOptions): BeadPattern {
+  const expectedLength = options.width * options.height * 4
+  if (imageData.width !== options.width || imageData.height !== options.height || imageData.data.length !== expectedLength) {
+    throw new Error('像素数据尺寸与图纸尺寸不一致')
+  }
   const count = options.width * options.height
   const pixels: RGB[] = new Array(count)
   const alpha: number[] = new Array(count)
@@ -286,4 +295,8 @@ export function processImage(image: HTMLImageElement, options: ProcessOptions): 
     .sort((a, b) => b.count - a.count)
     .map((item) => ({ ...item, percent: totalBeads ? item.count / totalBeads : 0 }))
   return { width: options.width, height: options.height, cells, usage, totalBeads }
+}
+
+export function processImage(image: HTMLImageElement, options: ProcessOptions): BeadPattern {
+  return processImageData(sampleImage(image, options), options)
 }

@@ -1,3 +1,5 @@
+import { measurePatternLayout, type LegendPosition } from './patternLayout.ts'
+
 const TARGET_CELL_SIZE = 96
 const MIN_CELL_SIZE = 32
 const MAX_CANVAS_EDGE = 12_288
@@ -8,19 +10,28 @@ export type FullExportPlan = {
   pixelWidth: number
   pixelHeight: number
   pixelText: boolean
+  legendPosition: LegendPosition
+  coordinateFontScale: number
+  codeFontScale: number
 }
 
 function measureExport(width: number, height: number, colorCount: number, cellSize: number): FullExportPlan {
-  const margin = Math.ceil(Math.max(28, cellSize * 1.35))
-  const pixelWidth = margin * 2 + width * cellSize + 220
-  const patternHeight = margin * 2 + height * cellSize
-  const legendHeight = margin * 2 + 44 + colorCount * 23
+  const layout = measurePatternLayout(width, height, colorCount, {
+    cellSize,
+    coordinates: true,
+    title: false,
+    legend: true,
+    legendPosition: 'bottom',
+  })
 
   return {
     cellSize,
-    pixelWidth,
-    pixelHeight: Math.max(patternHeight, legendHeight),
+    pixelWidth: layout.width,
+    pixelHeight: layout.height,
     pixelText: false,
+    legendPosition: 'bottom',
+    coordinateFontScale: 0.56,
+    codeFontScale: 0.52,
   }
 }
 

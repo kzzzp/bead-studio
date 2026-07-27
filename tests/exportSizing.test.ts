@@ -12,12 +12,15 @@ describe('createFullExportPlan', () => {
     assert.ok(plan.pixelWidth * plan.pixelHeight <= 64_000_000)
   })
 
-  it('uses the maximum detail for ordinary patterns', () => {
+  it('uses the maximum detail and a bottom legend for ordinary patterns', () => {
     const plan = createFullExportPlan(40, 40, 18)
 
     assert.equal(plan.cellSize, 96)
-    assert.equal(plan.pixelWidth, 4_320)
-    assert.equal(plan.pixelHeight, 4_100)
+    assert.equal(plan.legendPosition, 'bottom')
+    assert.ok(plan.coordinateFontScale >= 0.5)
+    assert.ok(plan.codeFontScale >= 0.5)
+    assert.ok(plan.pixelWidth <= 12_288)
+    assert.ok(plan.pixelHeight <= 12_288)
   })
 
   it('uses readable canvas text instead of oversized pixel glyphs', () => {

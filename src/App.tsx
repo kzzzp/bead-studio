@@ -264,6 +264,9 @@ function App() {
         legend: true,
         pixelRatio: 1,
         pixelText: plan.pixelText,
+        legendPosition: plan.legendPosition,
+        coordinateFontScale: plan.coordinateFontScale,
+        codeFontScale: plan.codeFontScale,
       })
       const blob = await canvasToPngBlob(canvas)
       downloadBlob(blob, `拼豆完整高清图纸-${pattern.width}x${pattern.height}.png`)
