@@ -16,6 +16,20 @@ export interface DrawOptions {
   legendPosition?: LegendPosition
   coordinateFontScale?: number
   codeFontScale?: number
+  watermark?: {
+    text: string
+    opacity?: number
+  }
+}
+
+function watermarkText(options: DrawOptions) {
+  return options.watermark?.text.trim().slice(0, 60) ?? ''
+}
+
+function watermarkPositions(canvasWidth: number, canvasHeight: number) {
+  const columns = [0.06, 0.5, 0.94]
+  const rows = [0.15, 0.5, 0.85]
+  return rows.flatMap((y) => columns.map((x) => ({ x: canvasWidth * x, y: canvasHeight * y })))
 }
 
 const PIXEL_GLYPHS: Record<string, string[]> = {
@@ -253,6 +267,30 @@ export function drawPattern(canvas: HTMLCanvasElement, pattern: BeadPattern, opt
       }
     }
   }
+
+  const watermark = watermarkText(options)
+  if (watermark) {
+    let fontSize = Math.max(28, Math.min(170, options.cellSize * 1.55))
+    context.save()
+    context.globalAlpha = Math.max(0.1, Math.min(0.3, options.watermark?.opacity ?? 0.18))
+    context.fillStyle = '#656a67'
+    context.textAlign = 'center'
+    context.textBaseline = 'middle'
+    context.font = `700 ${fontSize}px system-ui, sans-serif`
+    const measuredWidth = context.measureText(watermark).width
+    if (measuredWidth > width * 0.74) {
+      fontSize = Math.max(24, fontSize * (width * 0.74 / measuredWidth))
+      context.font = `700 ${fontSize}px system-ui, sans-serif`
+    }
+    for (const position of watermarkPositions(width, height)) {
+      context.save()
+      context.translate(position.x, position.y)
+      context.rotate(-32 * Math.PI / 180)
+      context.fillText(watermark, 0, 0)
+      context.restore()
+    }
+    context.restore()
+  }
 }
 
 const escapeXml = (value: string) => value
@@ -341,6 +379,20 @@ export function createPatternSvg(pattern: BeadPattern, options: Omit<DrawOptions
       parts.push(`<text x="${legendX + 24}" y="${y}" fill="#30312c" font-family="ui-monospace,Consolas,monospace" font-size="13" font-weight="700" dominant-baseline="central">${item.color.code}</text>`)
       parts.push(`<text x="${legendX + 86}" y="${y}" fill="#77766e" font-family="system-ui,sans-serif" font-size="13" dominant-baseline="central">${item.count} 颗</text>`)
       y += 26
+    }
+  }
+
+
+  const watermark = watermarkText(options)
+  if (watermark) {
+    let fontSize = Math.max(28, Math.min(170, options.cellSize * 1.55))
+    const approximateTextWidth = watermark.length * fontSize * 0.62
+    if (approximateTextWidth > width * 0.74) {
+      fontSize = Math.max(24, fontSize * (width * 0.74 / approximateTextWidth))
+    }
+    const opacity = Math.max(0.1, Math.min(0.3, options.watermark?.opacity ?? 0.18))
+    for (const position of watermarkPositions(width, height)) {
+      parts.push(`<text x="${position.x}" y="${position.y}" fill="#656a67" fill-opacity="${opacity}" font-family="system-ui,sans-serif" font-size="${fontSize}" font-weight="700" text-anchor="middle" dominant-baseline="central" transform="rotate(-32 ${position.x} ${position.y})">${escapeXml(watermark)}</text>`)
     }
   }
 
