@@ -16,12 +16,14 @@ import {
   RotateCcw,
   ShieldCheck,
   Sparkles,
+  Stamp,
   Upload,
   WandSparkles,
   X,
 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import JSZip from 'jszip'
+import { CutoutEditor } from './CutoutEditor'
 import { createFullExportPlan } from './exportSizing'
 import { processImage, type BeadPattern, type ProcessOptions } from './imageProcessing'
 import { cutOutPerson } from './personCutout'
@@ -47,6 +49,8 @@ const DEFAULT_OPTIONS: ProcessOptions = {
   dither: false,
   fit: 'contain',
 }
+
+const DEFAULT_WATERMARK_TEXT = '@小Z拼豆图纸定制'
 
 const SAMPLE_SVG = `
 <svg xmlns="http://www.w3.org/2000/svg" width="720" height="720" viewBox="0 0 720 720">
@@ -188,10 +192,32 @@ function App() {
   const [exportInfo, setExportInfo] = useState('')
   const [isExporting, setIsExporting] = useState(false)
   const [isCuttingOut, setIsCuttingOut] = useState(false)
+  const [isEditingCutout, setIsEditingCutout] = useState(false)
   const [cutoutInfo, setCutoutInfo] = useState('')
+  const [watermarkEnabled, setWatermarkEnabled] = useState(() => window.localStorage.getItem('bead-studio-watermark-enabled') === 'true')
+  const [watermarkText, setWatermarkText] = useState(() => window.localStorage.getItem('bead-studio-watermark-text') || DEFAULT_WATERMARK_TEXT)
+  const [watermarkOpacity, setWatermarkOpacity] = useState(() => {
+    const saved = Number(window.localStorage.getItem('bead-studio-watermark-opacity'))
+    return saved >= 10 && saved <= 30 ? saved : 18
+  })
   const fileRef = useRef<HTMLInputElement>(null)
   const cutoutRequestRef = useRef(0)
   const patternSource = cutout ?? source
+  const watermark = watermarkEnabled && watermarkText.trim()
+    ? { text: watermarkText.trim(), opacity: watermarkOpacity / 100 }
+    : undefined
+
+  useEffect(() => {
+    window.localStorage.setItem('bead-studio-watermark-enabled', String(watermarkEnabled))
+  }, [watermarkEnabled])
+
+  useEffect(() => {
+    window.localStorage.setItem('bead-studio-watermark-text', watermarkText)
+  }, [watermarkText])
+
+  useEffect(() => {
+    window.localStorage.setItem('bead-studio-watermark-opacity', String(watermarkOpacity))
+  }, [watermarkOpacity])
 
   const pattern = useMemo(() => {
     if (!patternSource) return null
@@ -222,6 +248,7 @@ function App() {
         return null
       })
       setIsCuttingOut(false)
+      setIsEditingCutout(false)
       setCutoutInfo('')
       setSource((old) => {
         if (old?.url.startsWith('blob:')) URL.revokeObjectURL(old.url)
@@ -264,6 +291,7 @@ function App() {
     setCutout(null)
     setSource(null)
     setIsCuttingOut(false)
+    setIsEditingCutout(false)
     setCutoutInfo('')
   }
 
@@ -272,6 +300,7 @@ function App() {
     if (cutout) {
       if (cutout.url.startsWith('blob:')) URL.revokeObjectURL(cutout.url)
       setCutout(null)
+      setIsEditingCutout(false)
       setCutoutInfo('已恢复完整图片')
       return
     }
@@ -301,7 +330,7 @@ function App() {
       setPreviewMode('pattern')
       setCutoutInfo(result.mode === 'cartoon-background'
         ? '真人模型未识别，已自动切换卡通背景抠图；空白区域不计数'
-        : '已只保留人物；透明区域按画板色显示，不计入豆子数量')
+        : '已保留识别到的主体；请检查宠物、毛发和衣物边缘，必要时使用人工修边')
     } catch (error) {
       if (resultUrl) URL.revokeObjectURL(resultUrl)
       console.warn(error)
@@ -310,6 +339,29 @@ function App() {
       }
     } finally {
       if (cutoutRequestRef.current === requestId) setIsCuttingOut(false)
+    }
+  }
+
+  const applyManualCutout = async (blob: Blob) => {
+    if (!source) return
+    const resultUrl = URL.createObjectURL(blob)
+    const image = new Image()
+    try {
+      await new Promise<void>((resolve, reject) => {
+        image.onload = () => resolve()
+        image.onerror = () => reject(new Error('人工修边结果读取失败'))
+        image.src = resultUrl
+      })
+      setCutout((old) => {
+        if (old?.url.startsWith('blob:')) URL.revokeObjectURL(old.url)
+        return { image, url: resultUrl, name: `${source.name} · 人工修边` }
+      })
+      setIsEditingCutout(false)
+      setPreviewMode('original')
+      setCutoutInfo('人工修边已应用；图纸与用豆统计已按新边缘重新计算')
+    } catch (error) {
+      URL.revokeObjectURL(resultUrl)
+      throw error
     }
   }
 
@@ -331,6 +383,7 @@ function App() {
         legendPosition: plan.legendPosition,
         coordinateFontScale: plan.coordinateFontScale,
         codeFontScale: plan.codeFontScale,
+        watermark,
       })
       const blob = await canvasToPngBlob(canvas)
       downloadBlob(blob, `拼豆完整高清图纸-${pattern.width}x${pattern.height}.png`)
@@ -373,6 +426,7 @@ function App() {
             coordinateOffsetX: startX,
             coordinateOffsetY: startY,
             pixelText: true,
+            watermark,
           })
           const blob = await canvasToPngBlob(canvas)
           firstPageSize ||= `${canvas.width} × ${canvas.height}px`
@@ -410,6 +464,7 @@ function App() {
       grid: true,
       boardLines,
       legend: true,
+      watermark,
     })
     setExportInfo('已生成 SVG 矢量图，可无限放大')
     downloadText(svg, 'image/svg+xml;charset=utf-8', '拼豆坐标图纸-矢量.svg')
@@ -425,6 +480,7 @@ function App() {
       grid: false,
       boardLines: false,
       pixelRatio: 2,
+      watermark,
     })
     downloadCanvas(canvas, '拼豆像素预览.png')
   }
@@ -511,13 +567,20 @@ function App() {
           </section>
 
           <section className={`settings-section ${!source ? 'is-muted' : ''}`}>
-            <div className="section-title"><span><WandSparkles size={16} /> AI 人物抠图</span><em>本机运行</em></div>
+            <div className="section-title"><span><WandSparkles size={16} /> 智能抠图与修边</span><em>本机运行</em></div>
             <div className={`cutout-card ${cutout ? 'is-active' : ''}`}>
-              <p>自动只保留人物；外部区域显示白色画板，但没有色号，也不计入用豆数量。</p>
-              <button type="button" onClick={togglePersonCutout} disabled={isCuttingOut}>
-                <Sparkles size={15} />
-                {isCuttingOut ? '正在识别人物…' : cutout ? '恢复完整图片' : '一键只保留人物'}
-              </button>
+              <p>先自动抠图，再用恢复/擦除画笔修复宠物、毛发和衣物边缘；透明区域没有色号，也不计豆。</p>
+              <div className="cutout-actions">
+                <button type="button" onClick={togglePersonCutout} disabled={isCuttingOut}>
+                  <Sparkles size={15} />
+                  {isCuttingOut ? '正在识别主体…' : cutout ? '恢复完整图片' : '一键只保留主体'}
+                </button>
+                {cutout && (
+                  <button type="button" className="manual-edge-button" onClick={() => setIsEditingCutout(true)}>
+                    <WandSparkles size={15} /> 人工修边
+                  </button>
+                )}
+              </div>
               <small role="status" aria-live="polite">{cutoutInfo || '首次使用需加载约 12 MB 的本地模型'}</small>
             </div>
           </section>
@@ -552,7 +615,7 @@ function App() {
                 <button type="button" className="ghost-button" onClick={loadSample}><WandSparkles size={16} /> 查看示例效果</button>
               </div>
             ) : previewMode === 'original' ? (
-              <div className={`original-preview ${cutout ? 'has-transparency' : ''}`}><img src={patternSource?.url} alt={cutout ? 'AI 抠图结果预览' : '原图预览'} /></div>
+              <div className={`original-preview ${cutout ? 'has-transparency' : ''}`}><img src={patternSource?.url} alt={cutout ? '抠图结果预览' : '原图预览'} /></div>
             ) : (
               <div className="canvas-scroll">
                 <PatternPreview pattern={pattern} mode={previewMode} showCodes={showCodes} boardLines={boardLines} zoom={zoom} />
@@ -561,7 +624,7 @@ function App() {
           </div>
           {pattern && (
             <div className="stage-status">
-              <span><i className="status-dot" /> {cutout ? 'AI 已抠图 · 空白格不计数' : '已按 MARD 色卡完成匹配'}</span>
+              <span><i className="status-dot" /> {cutout ? '已抠图 · 可人工修边 · 空白格不计数' : '已按 MARD 色卡完成匹配'}</span>
               <span>{pattern.width} × {pattern.height} 格</span>
             </div>
           )}
@@ -598,9 +661,29 @@ function App() {
               <div className="export-card">
                 <h3>导出你的图纸</h3>
                 <p>默认导出一张完整高清图，不拆分；SVG 可无损放大，分页图仅用于分板打印。</p>
+                <div className="watermark-control">
+                  <Toggle label="导出时加水印" checked={watermarkEnabled} onChange={setWatermarkEnabled} />
+                  {watermarkEnabled && (
+                    <label className="watermark-input">
+                      <span><Stamp size={13} /> 水印文字</span>
+                      <input
+                        type="text"
+                        maxLength={60}
+                        value={watermarkText}
+                        placeholder={DEFAULT_WATERMARK_TEXT}
+                        onChange={(event) => setWatermarkText(event.target.value)}
+                      />
+                      <label className="watermark-strength">
+                        <span>水印强度 <b>{watermarkOpacity}%</b></span>
+                        <input type="range" min="10" max="30" step="1" value={watermarkOpacity} onChange={(event) => setWatermarkOpacity(Number(event.target.value))} />
+                      </label>
+                      <small>大字号斜铺 9 处并覆盖整张图，边缘水印会故意裁切，降低直接截图使用的可能</small>
+                    </label>
+                  )}
+                </div>
                 <button type="button" className="export-primary" onClick={exportFullPattern} disabled={isExporting}><Download size={16} /> {isExporting ? '正在生成图纸…' : '下载完整高清图'}</button>
                 {exportInfo && <span className="export-status"><Check size={13} /> {exportInfo}</span>}
-                <div>
+                <div className="export-actions">
                   <button type="button" onClick={exportSvg} disabled={isExporting}><FileCode2 size={14} /> SVG 无损图</button>
                   <button type="button" onClick={exportPagedPattern} disabled={isExporting}><ImageIcon size={14} /> 分页打印</button>
                   <button type="button" onClick={() => downloadCsv(pattern)} disabled={isExporting}><FileDown size={14} /> CSV 清单</button>
@@ -611,6 +694,14 @@ function App() {
           <div className="palette-note"><span className="swatch-stack"><i /><i /><i /></span><p><strong>MARD 基础 221 色（A–H、M）</strong><br />不与 COCO / Perler / Hama 色号通用；屏幕色值为近似值</p><ChevronDown size={14} /></div>
         </aside>
       </main>
+      {source && cutout && isEditingCutout && (
+        <CutoutEditor
+          sourceImage={source.image}
+          cutoutImage={cutout.image}
+          onApply={applyManualCutout}
+          onClose={() => setIsEditingCutout(false)}
+        />
+      )}
     </div>
   )
 }
