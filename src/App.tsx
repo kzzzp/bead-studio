@@ -6,6 +6,7 @@ import {
   Download,
   FileDown,
   FileCode2,
+  FlipHorizontal2,
   Grid3X3,
   Image as ImageIcon,
   Layers3,
@@ -33,6 +34,8 @@ import { createFullExportPlan } from './exportSizing'
 import { DEFAULT_IMAGE_TRANSFORM } from './imageComposition'
 import { processImage, type BeadPattern, type ProcessOptions } from './imageProcessing'
 import { getBuiltInPalette, parseCustomPalette, removeDisabledColors, type BuiltInPaletteId } from './paletteRegistry'
+import { mirrorPattern } from './patternEditing'
+import type { PaperSize, PrintOrientation } from './printLayout'
 import { cutOutPerson } from './personCutout'
 import { canvasToPngBlob, createPatternSvg, downloadBlob, downloadCanvas, downloadText, drawPattern } from './patternRenderer'
 
@@ -231,6 +234,9 @@ function App() {
   const [isEditingComposition, setIsEditingComposition] = useState(false)
   const [isEditingPattern, setIsEditingPattern] = useState(false)
   const [isManagingPalette, setIsManagingPalette] = useState(false)
+  const [pdfPaper, setPdfPaper] = useState<PaperSize>('a4')
+  const [pdfOrientation, setPdfOrientation] = useState<PrintOrientation>('portrait')
+  const [pdfBeadSize, setPdfBeadSize] = useState<2.6 | 5>(2.6)
   const [customPalette, setCustomPalette] = useState<CustomPaletteDefinition | null>(loadCustomPalette)
   const [paletteId, setPaletteId] = useState<PaletteSelectionId>(() => {
     const saved = window.localStorage.getItem('bead-studio-palette-id') as PaletteSelectionId | null
@@ -506,13 +512,14 @@ function App() {
     }
   }
 
-  const exportFullPattern = async () => {
+  const exportFullPattern = async (mirrored: boolean) => {
     if (!pattern || isExporting) return
     setIsExporting(true)
     try {
-      const plan = createFullExportPlan(pattern.width, pattern.height, pattern.usage.length)
+      const exportPattern = mirrored ? mirrorPattern(pattern) : pattern
+      const plan = createFullExportPlan(exportPattern.width, exportPattern.height, exportPattern.usage.length)
       const canvas = document.createElement('canvas')
-      drawPattern(canvas, pattern, {
+      drawPattern(canvas, exportPattern, {
         cellSize: plan.cellSize,
         coordinates: true,
         codes: true,
@@ -527,11 +534,35 @@ function App() {
         watermark,
       })
       const blob = await canvasToPngBlob(canvas)
-      downloadBlob(blob, `拼豆完整高清图纸-${pattern.width}x${pattern.height}.png`)
-      setExportInfo(`已生成单张完整 PNG · ${canvas.width} × ${canvas.height}px · 每格 ${plan.cellSize}px`)
+      downloadBlob(blob, `${mirrored ? '拼豆镜像成品图纸' : '拼豆完整高清图纸'}-${pattern.width}x${pattern.height}.png`)
+      setExportInfo(`已生成${mirrored ? '镜像' : '普通'}单张 PNG · ${canvas.width} × ${canvas.height}px · 每格 ${plan.cellSize}px`)
     } catch (error) {
       console.error(error)
       window.alert('完整 PNG 生成失败，当前设备内存可能不足；请改用 SVG 无损图。')
+    } finally {
+      setIsExporting(false)
+    }
+  }
+
+  const exportPhysicalPdf = async (mirrored: boolean) => {
+    if (!pattern || isExporting) return
+    setIsExporting(true)
+    try {
+      const exportPattern = mirrored ? mirrorPattern(pattern) : pattern
+      const { createPhysicalPdfBlob } = await import('./pdfExport')
+      const { blob, layout } = createPhysicalPdfBlob(exportPattern, {
+        paper: pdfPaper,
+        orientation: pdfOrientation,
+        beadSizeMm: pdfBeadSize,
+        overlapCells: 2,
+        paletteName: selectedPalette.name,
+        mirrored,
+      })
+      downloadBlob(blob, `拼豆真实尺寸-${pdfPaper.toUpperCase()}-${pdfBeadSize}mm${mirrored ? '-镜像' : ''}.pdf`)
+      setExportInfo(`已生成 100% 实际尺寸 PDF · ${layout.pages.length} 张图纸页 + 1 张色号表 · ${(blob.size / 1024).toFixed(0)} KB`)
+    } catch (error) {
+      console.error(error)
+      window.alert('PDF 生成失败，请减少图纸尺寸后重试。')
     } finally {
       setIsExporting(false)
     }
@@ -845,12 +876,25 @@ function App() {
                     </label>
                   )}
                 </div>
-                <button type="button" className="export-primary" onClick={exportFullPattern} disabled={isExporting}><Download size={16} /> {isExporting ? '正在生成图纸…' : '下载完整高清图'}</button>
+                <div className="export-primary-row">
+                  <button type="button" className="export-primary" onClick={() => exportFullPattern(false)} disabled={isExporting}><Download size={16} /> {isExporting ? '正在生成图纸…' : '普通高清图'}</button>
+                  <button type="button" className="export-mirror" onClick={() => exportFullPattern(true)} disabled={isExporting}><FlipHorizontal2 size={16} /> 镜像成品图</button>
+                </div>
                 {exportInfo && <span className="export-status"><Check size={13} /> {exportInfo}</span>}
                 <div className="export-actions">
                   <button type="button" onClick={exportSvg} disabled={isExporting}><FileCode2 size={14} /> SVG 无损图</button>
                   <button type="button" onClick={exportPagedPattern} disabled={isExporting}><ImageIcon size={14} /> 分页打印</button>
                   <button type="button" onClick={() => downloadCsv(pattern)} disabled={isExporting}><FileDown size={14} /> CSV 清单</button>
+                </div>
+                <div className="pdf-export-box">
+                  <strong>100% 实际尺寸 PDF</strong>
+                  <div className="pdf-options">
+                    <label><span>纸张</span><select value={pdfPaper} onChange={(event) => setPdfPaper(event.target.value as PaperSize)}><option value="a4">A4</option><option value="a3">A3</option></select></label>
+                    <label><span>方向</span><select value={pdfOrientation} onChange={(event) => setPdfOrientation(event.target.value as PrintOrientation)}><option value="portrait">纵向</option><option value="landscape">横向</option></select></label>
+                    <label><span>豆距</span><select value={pdfBeadSize} onChange={(event) => setPdfBeadSize(Number(event.target.value) as 2.6 | 5)}><option value="2.6">2.6 mm</option><option value="5">5 mm</option></select></label>
+                  </div>
+                  <small>自动分页并保留 2 格重叠区、裁切定位标记与独立色号表；打印时请选择“实际大小 / 100%”。</small>
+                  <div><button type="button" onClick={() => exportPhysicalPdf(false)} disabled={isExporting}><FileDown size={14} /> 普通 PDF</button><button type="button" onClick={() => exportPhysicalPdf(true)} disabled={isExporting}><FlipHorizontal2 size={14} /> 镜像 PDF</button></div>
                 </div>
               </div>
             </>

@@ -220,11 +220,23 @@ button:focus-visible, input:focus-visible { outline: 3px solid rgba(71, 114, 93,
 .watermark-strength > span { color: #687a70; font-size: 10px; }
 .watermark-strength b { color: #3f604e; }
 .watermark-strength input[type="range"] { height: 3px; padding: 0; border: 0; accent-color: var(--sage); box-shadow: none; cursor: pointer; }
-.export-primary { width: 100%; padding: 11px; display: flex; align-items: center; justify-content: center; gap: 6px; color: white; border: 0; border-radius: 7px; background: var(--sage); font-size: 13px; font-weight: 600; cursor: pointer; }
+.export-primary-row { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.export-primary, .export-mirror { width: 100%; min-height: 40px; padding: 9px 6px; display: flex; align-items: center; justify-content: center; gap: 5px; border-radius: 7px; font-size: 11px; font-weight: 700; cursor: pointer; }
+.export-primary { color: white; border: 0; background: var(--sage); }
+.export-mirror { color: var(--sage-dark); border: 1px solid #abc2b4; background: white; }
 .export-primary:disabled { cursor: wait; opacity: .68; }
+.export-mirror:disabled { cursor: wait; opacity: .55; }
 .export-status { margin-top: 8px; display: flex; align-items: center; justify-content: center; gap: 5px; color: #4d725f; font-size: 10px; font-weight: 600; }
 .export-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 7px; }
 .export-actions button { padding: 8px 5px; display: flex; align-items: center; justify-content: center; gap: 4px; color: #617166; border: 1px solid #cddbd1; border-radius: 6px; background: rgba(255, 255, 255, .7); font-size: 10px; cursor: pointer; }
+.pdf-export-box { padding: 10px; margin-top: 8px; border: 1px solid #cddbd1; border-radius: 8px; background: rgba(255, 255, 255, .62); }
+.pdf-export-box > strong { display: block; margin-bottom: 7px; color: #4e6656; font-size: 11px; }
+.pdf-options { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; }
+.pdf-options label { display: grid; gap: 3px; color: #85877e; font-size: 8px; }
+.pdf-options select { min-width: 0; height: 29px; padding: 0 4px; color: #5e625b; border: 1px solid #d3d9d4; border-radius: 5px; background: white; font-size: 9px; }
+.pdf-export-box > small { display: block; margin: 7px 0; color: #858d86; font-size: 8px; line-height: 1.45; }
+.pdf-export-box > div:last-child { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+.pdf-export-box > div:last-child button { min-height: 32px; display: inline-flex; align-items: center; justify-content: center; gap: 4px; color: var(--sage-dark); border: 1px solid #b9cbbf; border-radius: 6px; background: white; font-size: 9px; font-weight: 700; cursor: pointer; }
 .palette-note { margin-top: auto; padding: 11px 2px 0; display: grid; grid-template-columns: 34px 1fr auto; align-items: center; border-top: 1px solid #eceae4; }
 .palette-note p { margin: 0; color: #9a9b94; font-size: 9px; line-height: 1.5; }
 .palette-note strong { color: #6a6c65; font-size: 11px; }
