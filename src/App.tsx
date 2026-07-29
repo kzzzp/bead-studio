@@ -27,10 +27,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import JSZip from 'jszip'
 import { CompositionEditor } from './CompositionEditor'
 import { CutoutEditor } from './CutoutEditor'
+import { PaletteManager, type CustomPaletteDefinition } from './PaletteManager'
 import { PatternEditor } from './PatternEditor'
 import { createFullExportPlan } from './exportSizing'
 import { DEFAULT_IMAGE_TRANSFORM } from './imageComposition'
 import { processImage, type BeadPattern, type ProcessOptions } from './imageProcessing'
+import { getBuiltInPalette, parseCustomPalette, removeDisabledColors, type BuiltInPaletteId } from './paletteRegistry'
 import { cutOutPerson } from './personCutout'
 import { canvasToPngBlob, createPatternSvg, downloadBlob, downloadCanvas, downloadText, drawPattern } from './patternRenderer'
 
@@ -46,6 +48,27 @@ type PatternHistoryState = {
   source: BeadPattern | null
   items: BeadPattern[]
   index: number
+}
+
+type PaletteSelectionId = BuiltInPaletteId | 'custom'
+
+function loadCustomPalette(): CustomPaletteDefinition | null {
+  try {
+    const saved = JSON.parse(window.localStorage.getItem('bead-studio-custom-palette') ?? 'null') as { name?: unknown; colors?: unknown }
+    if (!saved || typeof saved.name !== 'string' || !Array.isArray(saved.colors)) return null
+    return { name: saved.name, colors: parseCustomPalette(JSON.stringify(saved.colors), 'json') }
+  } catch {
+    return null
+  }
+}
+
+function loadDisabledPaletteColors() {
+  try {
+    const saved = JSON.parse(window.localStorage.getItem('bead-studio-disabled-palette-colors') ?? '{}') as Record<string, unknown>
+    return Object.fromEntries(Object.entries(saved).map(([id, codes]) => [id, Array.isArray(codes) ? codes.filter((code): code is string => typeof code === 'string') : []]))
+  } catch {
+    return {} as Record<string, string[]>
+  }
 }
 
 const DEFAULT_OPTIONS: ProcessOptions = {
@@ -207,6 +230,13 @@ function App() {
   const [isEditingCutout, setIsEditingCutout] = useState(false)
   const [isEditingComposition, setIsEditingComposition] = useState(false)
   const [isEditingPattern, setIsEditingPattern] = useState(false)
+  const [isManagingPalette, setIsManagingPalette] = useState(false)
+  const [customPalette, setCustomPalette] = useState<CustomPaletteDefinition | null>(loadCustomPalette)
+  const [paletteId, setPaletteId] = useState<PaletteSelectionId>(() => {
+    const saved = window.localStorage.getItem('bead-studio-palette-id') as PaletteSelectionId | null
+    return saved === 'perler' || saved === 'hama' || saved === 'custom' ? saved : 'mard'
+  })
+  const [disabledPaletteColors, setDisabledPaletteColors] = useState<Record<string, string[]>>(loadDisabledPaletteColors)
   const [cutoutInfo, setCutoutInfo] = useState('')
   const [watermarkEnabled, setWatermarkEnabled] = useState(() => window.localStorage.getItem('bead-studio-watermark-enabled') === 'true')
   const [watermarkText, setWatermarkText] = useState(() => window.localStorage.getItem('bead-studio-watermark-text') || DEFAULT_WATERMARK_TEXT)
@@ -217,6 +247,12 @@ function App() {
   const fileRef = useRef<HTMLInputElement>(null)
   const cutoutRequestRef = useRef(0)
   const patternSource = cutout ?? source
+  const selectedPalette = paletteId === 'custom' && customPalette ? customPalette : getBuiltInPalette(paletteId === 'custom' ? 'mard' : paletteId)
+  const selectedDisabledCodes = useMemo(() => new Set(disabledPaletteColors[paletteId] ?? []), [disabledPaletteColors, paletteId])
+  const activePalette = useMemo(() => {
+    const colors = removeDisabledColors(selectedPalette.colors, selectedDisabledCodes)
+    return colors.length ? colors : selectedPalette.colors.slice(0, 1)
+  }, [selectedDisabledCodes, selectedPalette])
   const watermark = watermarkEnabled && watermarkText.trim()
     ? { text: watermarkText.trim(), opacity: watermarkOpacity / 100 }
     : undefined
@@ -233,10 +269,28 @@ function App() {
     window.localStorage.setItem('bead-studio-watermark-opacity', String(watermarkOpacity))
   }, [watermarkOpacity])
 
+  useEffect(() => {
+    window.localStorage.setItem('bead-studio-palette-id', paletteId)
+  }, [paletteId])
+
+  useEffect(() => {
+    window.localStorage.setItem('bead-studio-disabled-palette-colors', JSON.stringify(disabledPaletteColors))
+  }, [disabledPaletteColors])
+
+  useEffect(() => {
+    if (customPalette) window.localStorage.setItem('bead-studio-custom-palette', JSON.stringify(customPalette))
+  }, [customPalette])
+
+  useEffect(() => {
+    setOptions((current) => current.maxColors <= activePalette.length
+      ? current
+      : { ...current, maxColors: activePalette.length })
+  }, [activePalette.length])
+
   const generatedPattern = useMemo(() => {
     if (!patternSource) return null
-    return processImage(patternSource.image, options)
-  }, [patternSource, options])
+    return processImage(patternSource.image, options, activePalette)
+  }, [activePalette, patternSource, options])
   const [patternHistory, setPatternHistory] = useState<PatternHistoryState>({ source: null, items: [], index: -1 })
   const pattern = generatedPattern && patternHistory.source === generatedPattern
     ? patternHistory.items[patternHistory.index] ?? generatedPattern
@@ -276,6 +330,29 @@ function App() {
 
   const updateOption = <K extends keyof ProcessOptions>(key: K, value: ProcessOptions[K]) => {
     setOptions((current) => ({ ...current, [key]: value }))
+  }
+
+  const selectPalette = (id: PaletteSelectionId) => {
+    if (id === 'custom' && !customPalette) return
+    setPaletteId(id)
+  }
+
+  const importCustomPalette = (palette: CustomPaletteDefinition) => {
+    setCustomPalette(palette)
+    setDisabledPaletteColors((current) => ({ ...current, custom: [] }))
+    setPaletteId('custom')
+  }
+
+  const togglePaletteColor = (code: string) => {
+    setDisabledPaletteColors((current) => {
+      const disabled = new Set(current[paletteId] ?? [])
+      if (disabled.has(code)) disabled.delete(code)
+      else {
+        if (selectedPalette.colors.length - disabled.size <= 1) return current
+        disabled.add(code)
+      }
+      return { ...current, [paletteId]: [...disabled] }
+    })
   }
 
   const setDimension = (dimension: 'width' | 'height', raw: number) => {
@@ -630,8 +707,18 @@ function App() {
           </section>
 
           <section className={`settings-section ${!source ? 'is-muted' : ''}`}>
-            <div className="section-title"><span><Palette size={16} /> 颜色处理</span><em>MARD 221 近似色卡</em></div>
-            <RangeControl label="最多颜色" value={options.maxColors} min={4} max={40} suffix=" 色" onChange={(value) => updateOption('maxColors', value)} />
+            <div className="section-title"><span><Palette size={16} /> 颜色处理</span><em>{selectedPalette.name}</em></div>
+            <div className="palette-select-row">
+              <select value={paletteId} onChange={(event) => selectPalette(event.target.value as PaletteSelectionId)} aria-label="选择豆子色卡">
+                <option value="mard">MARD 基础</option>
+                <option value="perler">Perler</option>
+                <option value="hama">Hama Midi</option>
+                {customPalette && <option value="custom">{customPalette.name}</option>}
+              </select>
+              <button type="button" onClick={() => setIsManagingPalette(true)}>管理色卡</button>
+            </div>
+            <small className="palette-availability">当前可用 {activePalette.length} 色 · 可在管理中停用没有库存的颜色</small>
+            <RangeControl label="最多颜色" value={options.maxColors} min={1} max={Math.min(80, activePalette.length)} suffix=" 色" onChange={(value) => updateOption('maxColors', value)} />
             <RangeControl label="饱和度" value={options.saturation} min={60} max={140} suffix="%" onChange={(value) => updateOption('saturation', value)} />
             <div className="dual-range">
               <RangeControl label="亮度" value={options.brightness} min={-30} max={30} onChange={(value) => updateOption('brightness', value)} />
@@ -701,7 +788,7 @@ function App() {
           </div>
           {pattern && (
             <div className="stage-status">
-              <span><i className="status-dot" /> {cutout ? '已抠图 · 可人工修边 · 空白格不计数' : '已按 MARD 色卡完成匹配'}</span>
+              <span><i className="status-dot" /> {cutout ? `已抠图 · ${selectedPalette.name} · 空白格不计数` : `已按 ${selectedPalette.name} 完成匹配`}</span>
               <span>{pattern.width} × {pattern.height} 格</span>
             </div>
           )}
@@ -768,7 +855,7 @@ function App() {
               </div>
             </>
           )}
-          <div className="palette-note"><span className="swatch-stack"><i /><i /><i /></span><p><strong>MARD 基础 221 色（A–H、M）</strong><br />不与 COCO / Perler / Hama 色号通用；屏幕色值为近似值</p><ChevronDown size={14} /></div>
+          <div className="palette-note"><span className="swatch-stack"><i /><i /><i /></span><p><strong>{selectedPalette.name} · {activePalette.length} 色可用</strong><br />当前品牌色号会同步用于图纸、用量统计与导出；屏幕色值为近似值</p><ChevronDown size={14} /></div>
         </aside>
       </main>
       {source && cutout && isEditingCutout && (
@@ -783,6 +870,7 @@ function App() {
         <PatternEditor
           pattern={pattern}
           originalPattern={generatedPattern}
+          palette={activePalette}
           canUndo={patternHistory.index > 0}
           canRedo={patternHistory.index >= 0 && patternHistory.index < patternHistory.items.length - 1}
           onCommit={commitPatternEdit}
@@ -801,6 +889,19 @@ function App() {
           transform={options.transform}
           onApply={(transform) => updateOption('transform', transform)}
           onClose={() => setIsEditingComposition(false)}
+        />
+      )}
+      {isManagingPalette && (
+        <PaletteManager
+          selectedId={paletteId}
+          selectedPalette={selectedPalette}
+          customPalette={customPalette}
+          disabledCodes={selectedDisabledCodes}
+          onSelect={selectPalette}
+          onImport={importCustomPalette}
+          onToggleColor={togglePaletteColor}
+          onEnableAll={() => setDisabledPaletteColors((current) => ({ ...current, [paletteId]: [] }))}
+          onClose={() => setIsManagingPalette(false)}
         />
       )}
     </div>

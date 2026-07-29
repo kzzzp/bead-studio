@@ -3,10 +3,17 @@ export type Lab = [number, number, number]
 
 export interface BeadColor {
   code: string
+  name?: string
   hex: string
   rgb: RGB
   lab: Lab
   family: string
+}
+
+export function createBeadColor(code: string, hex: string, family: string, name?: string): BeadColor {
+  const normalizedHex = hex.toUpperCase()
+  const rgb = hexToRgb(normalizedHex)
+  return { code, name, hex: normalizedHex, rgb, lab: rgbToLab(rgb), family }
 }
 
 const RAW_PALETTE: Array<[string, string]> = [
@@ -270,6 +277,5 @@ export function rgbToLab([r8, g8, b8]: RGB): Lab {
 }
 
 export const MARD_PALETTE: BeadColor[] = RAW_PALETTE.map(([code, hex]) => {
-  const rgb = hexToRgb(hex)
-  return { code, hex, rgb, lab: rgbToLab(rgb), family: FAMILY_NAMES[code[0]] }
+  return createBeadColor(code, hex, FAMILY_NAMES[code[0]])
 })

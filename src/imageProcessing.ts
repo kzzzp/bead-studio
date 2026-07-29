@@ -81,9 +81,10 @@ function nearestColor(lab: Lab, palette: BeadColor[]) {
   return best
 }
 
-function choosePalette(labs: Lab[], maxColors: number): BeadColor[] {
+function choosePalette(labs: Lab[], maxColors: number, availableColors: BeadColor[]): BeadColor[] {
   if (!labs.length) return []
-  const target = Math.max(1, Math.min(maxColors, MARD_PALETTE.length))
+  if (!availableColors.length) return []
+  const target = Math.max(1, Math.min(maxColors, availableColors.length))
   const mean: Lab = [0, 0, 0]
   for (const lab of labs) {
     mean[0] += lab[0]
@@ -94,7 +95,7 @@ function choosePalette(labs: Lab[], maxColors: number): BeadColor[] {
   mean[1] /= labs.length
   mean[2] /= labs.length
 
-  const first = nearestColor(mean, MARD_PALETTE)
+  const first = nearestColor(mean, availableColors)
   const chosen = [first]
   const chosenCodes = new Set([first.code])
   const distances = labs.map((lab) => labDistanceSq(lab, first.lab))
@@ -102,7 +103,7 @@ function choosePalette(labs: Lab[], maxColors: number): BeadColor[] {
   while (chosen.length < target) {
     let bestCandidate: BeadColor | null = null
     let bestImprovement = 0
-    for (const candidate of MARD_PALETTE) {
+    for (const candidate of availableColors) {
       if (chosenCodes.has(candidate.code)) continue
       let improvement = 0
       for (let i = 0; i < labs.length; i += 1) {
@@ -208,7 +209,7 @@ function sampleImage(image: HTMLImageElement, options: ProcessOptions) {
   return context.getImageData(0, 0, options.width, options.height)
 }
 
-export function processImageData(imageData: PixelImageData, options: ProcessOptions): BeadPattern {
+export function processImageData(imageData: PixelImageData, options: ProcessOptions, availableColors: BeadColor[] = MARD_PALETTE): BeadPattern {
   const expectedLength = options.width * options.height * 4
   if (imageData.width !== options.width || imageData.height !== options.height || imageData.data.length !== expectedLength) {
     throw new Error('像素数据尺寸与图纸尺寸不一致')
@@ -232,7 +233,7 @@ export function processImageData(imageData: PixelImageData, options: ProcessOpti
   for (let i = 0; i < count; i += 1) {
     if (alpha[i] >= 32 && !background[i]) labs.push(rgbToLab(pixels[i]))
   }
-  const palette = choosePalette(labs, options.maxColors)
+  const palette = choosePalette(labs, options.maxColors, availableColors)
   const cells: PatternCell[] = new Array(count)
 
   if (options.dither && palette.length) {
@@ -291,6 +292,6 @@ export function processImageData(imageData: PixelImageData, options: ProcessOpti
   return { width: options.width, height: options.height, cells, usage, totalBeads }
 }
 
-export function processImage(image: HTMLImageElement, options: ProcessOptions): BeadPattern {
-  return processImageData(sampleImage(image, options), options)
+export function processImage(image: HTMLImageElement, options: ProcessOptions, availableColors: BeadColor[] = MARD_PALETTE): BeadPattern {
+  return processImageData(sampleImage(image, options), options, availableColors)
 }

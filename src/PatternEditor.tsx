@@ -16,7 +16,7 @@ import {
 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import type { BeadPattern } from './imageProcessing.ts'
-import { MARD_PALETTE, type BeadColor } from './palette.ts'
+import type { BeadColor } from './palette.ts'
 import {
   applyPatternCell,
   copyPatternSelection,
@@ -34,6 +34,7 @@ type PendingTransfer = { mode: 'copy' | 'move'; selection: PatternSelection } | 
 interface PatternEditorProps {
   pattern: BeadPattern
   originalPattern: BeadPattern
+  palette: BeadColor[]
   canUndo: boolean
   canRedo: boolean
   onCommit: (pattern: BeadPattern) => void
@@ -73,6 +74,7 @@ function rasterLine(start: { x: number; y: number }, end: { x: number; y: number
 export function PatternEditor({
   pattern,
   originalPattern,
+  palette,
   canUndo,
   canRedo,
   onCommit,
@@ -85,7 +87,7 @@ export function PatternEditor({
   const [workingPattern, setWorkingPattern] = useState(pattern)
   const workingPatternRef = useRef(pattern)
   const [tool, setTool] = useState<EditorTool>('pencil')
-  const [selectedColor, setSelectedColor] = useState<BeadColor>(pattern.usage[0]?.color ?? MARD_PALETTE[0])
+  const [selectedColor, setSelectedColor] = useState<BeadColor>(pattern.usage[0]?.color ?? palette[0])
   const [replaceSource, setReplaceSource] = useState(pattern.usage[0]?.color.code ?? '')
   const [selection, setSelection] = useState<PatternSelection | null>(null)
   const [selectionStart, setSelectionStart] = useState<{ x: number; y: number } | null>(null)
@@ -99,6 +101,10 @@ export function PatternEditor({
     setWorkingPattern(pattern)
   }, [pattern])
   useEffect(() => {
+    if (palette.some((color) => color.code === selectedColor.code)) return
+    setSelectedColor(pattern.usage[0]?.color ?? palette[0])
+  }, [palette, pattern.usage, selectedColor.code])
+  useEffect(() => {
     if (pattern.usage.some((item) => item.color.code === replaceSource)) return
     setReplaceSource(pattern.usage[0]?.color.code ?? '')
   }, [pattern, replaceSource])
@@ -106,9 +112,9 @@ export function PatternEditor({
   const displayPattern = compareOriginal ? originalPattern : workingPattern
   const paletteGroups = useMemo(() => {
     const groups = new Map<string, BeadColor[]>()
-    for (const color of MARD_PALETTE) groups.set(color.family, [...(groups.get(color.family) ?? []), color])
+    for (const color of palette) groups.set(color.family, [...(groups.get(color.family) ?? []), color])
     return [...groups.entries()]
-  }, [])
+  }, [palette])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -279,7 +285,7 @@ export function PatternEditor({
           <span className="editor-toolbar-divider" />
           <label className="editor-color-select">
             <span className="bead-swatch" style={{ background: selectedColor.hex }}><i /></span>
-            <select value={selectedColor.code} onChange={(event) => setSelectedColor(MARD_PALETTE.find((color) => color.code === event.target.value) ?? selectedColor)} aria-label="选择画笔色号">
+            <select value={selectedColor.code} onChange={(event) => setSelectedColor(palette.find((color) => color.code === event.target.value) ?? selectedColor)} aria-label="选择画笔色号">
               {paletteGroups.map(([family, colors]) => (
                 <optgroup key={family} label={family}>
                   {colors.map((color) => <option key={color.code} value={color.code}>{color.code} · {color.hex}</option>)}
