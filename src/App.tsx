@@ -28,7 +28,6 @@ import {
   X,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import JSZip from 'jszip'
 import { CompositionEditor } from './CompositionEditor'
 import { CONVERSION_MODES } from './conversionModes'
 import { CutoutEditor } from './CutoutEditor'
@@ -228,19 +227,6 @@ function downloadCsv(pattern: BeadPattern) {
   link.click()
   link.remove()
   setTimeout(() => URL.revokeObjectURL(url), 1000)
-}
-
-function cropPattern(pattern: BeadPattern, startX: number, startY: number, width: number, height: number): BeadPattern {
-  const cells = []
-  let totalBeads = 0
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      const cell = pattern.cells[(startY + y) * pattern.width + startX + x]
-      cells.push(cell)
-      if (cell.color) totalBeads += 1
-    }
-  }
-  return { width, height, cells, usage: [], totalBeads }
 }
 
 function App() {
@@ -700,32 +686,6 @@ function App() {
     }
   }
 
-  const exportNormalAndMirror = async () => {
-    if (!pattern || isExporting) return
-    setIsExporting(true)
-    try {
-      const zip = new JSZip()
-      for (const mirrored of [false, true]) {
-        const exportPattern = mirrored ? mirrorPattern(pattern) : pattern
-        const plan = createFullExportPlan(exportPattern.width, exportPattern.height, exportPattern.usage.length)
-        const canvas = document.createElement('canvas')
-        drawPattern(canvas, exportPattern, {
-          cellSize: plan.cellSize, coordinates: true, codes: true, grid: true, boardLines,
-          legend: true, pixelRatio: 1, pixelText: plan.pixelText, legendPosition: plan.legendPosition,
-          coordinateFontScale: plan.coordinateFontScale, codeFontScale: plan.codeFontScale, watermark,
-        })
-        zip.file(`${mirrored ? '镜像版' : '普通版'}-${pattern.width}x${pattern.height}.png`, await canvasToPngBlob(canvas))
-      }
-      downloadBlob(await zip.generateAsync({ type: 'blob' }), `拼豆图纸-普通加镜像-${pattern.width}x${pattern.height}.zip`)
-      setExportInfo('已生成普通版＋镜像版 ZIP；图案方向不同，文字与坐标均保持正向')
-    } catch (error) {
-      console.error(error)
-      window.alert('普通版与镜像版打包失败，请分别导出。')
-    } finally {
-      setIsExporting(false)
-    }
-  }
-
   const exportCurrentStyle = async () => {
     if (!pattern || previewMode === 'original' || isExporting) return
     setIsExporting(true)
@@ -774,91 +734,6 @@ function App() {
     } catch (error) {
       console.error(error)
       window.alert('PDF 生成失败，请减少图纸尺寸后重试。')
-    } finally {
-      setIsExporting(false)
-    }
-  }
-
-  const exportBothPhysicalPdfs = async () => {
-    if (!pattern || isExporting) return
-    setIsExporting(true)
-    try {
-      const { createPhysicalPdfBlob } = await import('./pdfExport')
-      const zip = new JSZip()
-      for (const mirrored of [false, true]) {
-        const exportPattern = mirrored ? mirrorPattern(pattern) : pattern
-        const { blob } = createPhysicalPdfBlob(exportPattern, {
-          paper: pdfPaper, orientation: pdfOrientation, beadSizeMm: pdfBeadSize, overlapCells: 2,
-          paletteName: selectedPalette.name, mirrored,
-          customPaperMm: pdfPaper === 'custom' ? pdfCustomPaper : undefined,
-          scaleMode: pdfScaleMode,
-        })
-        zip.file(`${mirrored ? '镜像版' : '普通版'}-${pattern.width}x${pattern.height}.pdf`, blob)
-      }
-      downloadBlob(await zip.generateAsync({ type: 'blob' }), `拼豆实际尺寸PDF-普通加镜像-${pattern.width}x${pattern.height}.zip`)
-      setExportInfo('已生成普通版＋镜像版实际尺寸 PDF ZIP')
-    } catch (error) {
-      console.error(error)
-      window.alert('PDF 打包失败，请分别导出普通版和镜像版。')
-    } finally {
-      setIsExporting(false)
-    }
-  }
-
-  const exportPagedPattern = async () => {
-    if (!pattern || isExporting) return
-    setIsExporting(true)
-    try {
-      const pageSize = 29
-      const pagesX = Math.ceil(pattern.width / pageSize)
-      const pagesY = Math.ceil(pattern.height / pageSize)
-      const pageCount = pagesX * pagesY
-      const zip = new JSZip()
-      let firstPageSize = ''
-
-      for (let pageY = 0; pageY < pagesY; pageY += 1) {
-        for (let pageX = 0; pageX < pagesX; pageX += 1) {
-          const startX = pageX * pageSize
-          const startY = pageY * pageSize
-          const width = Math.min(pageSize, pattern.width - startX)
-          const height = Math.min(pageSize, pattern.height - startY)
-          const pagePattern = cropPattern(pattern, startX, startY, width, height)
-          const canvas = document.createElement('canvas')
-          drawPattern(canvas, pagePattern, {
-            cellSize: 64,
-            coordinates: true,
-            codes: true,
-            grid: true,
-            boardLines: false,
-            legend: false,
-            pixelRatio: 2,
-            coordinateOffsetX: startX,
-            coordinateOffsetY: startY,
-            pixelText: true,
-            watermark,
-          })
-          const blob = await canvasToPngBlob(canvas)
-          firstPageSize ||= `${canvas.width} × ${canvas.height}px`
-          const filename = `图纸-第${pageY + 1}行-第${pageX + 1}列.png`
-          if (pageCount === 1) {
-            downloadBlob(blob, filename)
-          } else {
-            zip.file(filename, blob)
-          }
-        }
-      }
-
-      if (pageCount > 1) {
-        zip.file('用豆清单.csv', createCsvContent(pattern))
-        const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' })
-        downloadBlob(blob, `拼豆清晰分页图-${pagesX}x${pagesY}页.zip`)
-      }
-      setExportInfo(pageCount === 1
-        ? `已生成 1 张清晰图纸 · ${firstPageSize}`
-        : `已生成 ${pageCount} 张清晰图纸并打包 · 每页最大 29 × 29 格`)
-    } catch (error) {
-      console.error(error)
-      window.alert('分页图纸生成失败，请减少图纸尺寸后重试。')
     } finally {
       setIsExporting(false)
     }
@@ -1111,56 +986,62 @@ function App() {
 
               <div className="export-card">
                 <h3>导出你的图纸</h3>
-                <p>默认导出一张完整高清图，不拆分；SVG 可无损放大，分页图仅用于分板打印。</p>
+                <p>一张完整高清图，放大仍清晰。常用操作只保留两项。</p>
                 <div className="project-save-row">
                   <input value={projectName} maxLength={60} onChange={(event) => setProjectName(event.target.value)} aria-label="工程名称" placeholder="工程名称" />
                   <button type="button" onClick={saveCurrentProject} disabled={isSavingProject}><Save size={14} /> {isSavingProject ? '保存中' : '保存工程'}</button>
                   <button type="button" onClick={openProjectManager}><FolderOpen size={14} /> 工程管理</button>
                 </div>
-                <div className="watermark-control">
-                  <Toggle label="导出时加水印" checked={watermarkEnabled} onChange={setWatermarkEnabled} />
-                  {watermarkEnabled && (
-                    <label className="watermark-input">
-                      <span><Stamp size={13} /> 水印文字</span>
-                      <input
-                        type="text"
-                        maxLength={60}
-                        value={watermarkText}
-                        placeholder={DEFAULT_WATERMARK_TEXT}
-                        onChange={(event) => setWatermarkText(event.target.value)}
-                      />
-                      <label className="watermark-strength">
-                        <span>水印强度 <b>{watermarkOpacity}%</b></span>
-                        <input type="range" min="10" max="30" step="1" value={watermarkOpacity} onChange={(event) => setWatermarkOpacity(Number(event.target.value))} />
-                      </label>
-                      <small>大字号斜铺 9 处并覆盖整张图，边缘水印会故意裁切，降低直接截图使用的可能</small>
-                    </label>
-                  )}
-                </div>
                 <div className="export-primary-row">
                   <button type="button" className="export-primary" onClick={() => exportFullPattern(false)} disabled={isExporting}><Download size={16} /> {isExporting ? '正在生成图纸…' : '普通高清图'}</button>
                   <button type="button" className="export-mirror" onClick={() => exportFullPattern(true)} disabled={isExporting}><FlipHorizontal2 size={16} /> 镜像成品图</button>
                 </div>
-                <button type="button" className="export-both" onClick={exportNormalAndMirror} disabled={isExporting}><Download size={14} /> 普通版＋镜像版 ZIP</button>
                 {exportInfo && <span className="export-status"><Check size={13} /> {exportInfo}</span>}
-                <div className="export-actions">
-                  <button type="button" onClick={exportCurrentStyle} disabled={isExporting || previewMode === 'original'}><Download size={14} /> 当前样式 PNG</button>
-                  <button type="button" onClick={exportSvg} disabled={isExporting}><FileCode2 size={14} /> SVG 无损图</button>
-                  <button type="button" onClick={exportPagedPattern} disabled={isExporting}><ImageIcon size={14} /> 分页打印</button>
-                  <button type="button" onClick={() => downloadCsv(pattern)} disabled={isExporting}><FileDown size={14} /> CSV 清单</button>
-                </div>
-                <div className="pdf-export-box">
-                  <strong>100% 实际尺寸 PDF</strong>
-                  <div className="pdf-options">
-                    <label><span>纸张</span><select value={pdfPaper} onChange={(event) => setPdfPaper(event.target.value as PaperSize)}><option value="a4">A4</option><option value="a3">A3</option><option value="custom">自定义</option></select></label>
-                    <label><span>方向</span><select value={pdfOrientation} onChange={(event) => setPdfOrientation(event.target.value as PrintOrientation)}><option value="auto">自动</option><option value="portrait">纵向</option><option value="landscape">横向</option></select></label>
-                    <label><span>比例</span><select value={pdfScaleMode} onChange={(event) => setPdfScaleMode(event.target.value as 'actual' | 'fit')}><option value="actual">100% 原尺寸</option><option value="fit">适合纸张</option></select></label>
-                    <label><span>格距 mm</span><input type="number" min="1" max="12" step="0.1" value={pdfBeadSize} onChange={(event) => setPdfBeadSize(Math.max(1, Number(event.target.value) || 2.6))} /></label>
+                <details className="export-details">
+                  <summary><span>水印设置</span><small>{watermarkEnabled ? '已开启' : '未开启'}</small></summary>
+                  <div className="export-details-body">
+                    <div className="watermark-control">
+                      <Toggle label="导出时加水印" checked={watermarkEnabled} onChange={setWatermarkEnabled} />
+                      {watermarkEnabled && (
+                        <label className="watermark-input">
+                          <span><Stamp size={13} /> 水印文字</span>
+                          <input type="text" maxLength={60} value={watermarkText} placeholder={DEFAULT_WATERMARK_TEXT} onChange={(event) => setWatermarkText(event.target.value)} />
+                          <label className="watermark-strength">
+                            <span>水印强度 <b>{watermarkOpacity}%</b></span>
+                            <input type="range" min="10" max="30" step="1" value={watermarkOpacity} onChange={(event) => setWatermarkOpacity(Number(event.target.value))} />
+                          </label>
+                          <small>水印会斜铺在整张导出图上。</small>
+                        </label>
+                      )}
+                    </div>
                   </div>
-                  {pdfPaper === 'custom' && <div className="custom-paper-row"><label>宽 <input type="number" min="100" value={pdfCustomPaper.width} onChange={(event) => setPdfCustomPaper((value) => ({ ...value, width: Number(event.target.value) }))} /> mm</label><label>高 <input type="number" min="100" value={pdfCustomPaper.height} onChange={(event) => setPdfCustomPaper((value) => ({ ...value, height: Number(event.target.value) }))} /> mm</label></div>}
-                  <small>自动分页并保留 2 格重叠区、裁切定位标记与独立色号表；打印时请选择“实际大小 / 100%”。</small>
-                  <div><button type="button" onClick={() => exportPhysicalPdf(false)} disabled={isExporting}><FileDown size={14} /> 普通 PDF</button><button type="button" onClick={() => exportPhysicalPdf(true)} disabled={isExporting}><FlipHorizontal2 size={14} /> 镜像 PDF</button><button type="button" onClick={exportBothPhysicalPdfs} disabled={isExporting}><Download size={14} /> 两版 ZIP</button></div>
-                </div>
+                </details>
+                <details className="export-details">
+                  <summary><span>更多导出格式</span><small>PNG · SVG · CSV</small></summary>
+                  <div className="export-details-body">
+                    <div className="export-actions">
+                      <button type="button" onClick={exportCurrentStyle} disabled={isExporting || previewMode === 'original'}><Download size={14} /> 当前样式 PNG</button>
+                      <button type="button" onClick={exportSvg} disabled={isExporting}><FileCode2 size={14} /> SVG 无损图</button>
+                      <button type="button" onClick={() => downloadCsv(pattern)} disabled={isExporting}><FileDown size={14} /> CSV 清单</button>
+                    </div>
+                  </div>
+                </details>
+                <details className="export-details">
+                  <summary><span>打印专用 PDF</span><small>需要实际尺寸时使用</small></summary>
+                  <div className="export-details-body">
+                    <div className="pdf-export-box">
+                      <div className="pdf-options">
+                        <label><span>纸张</span><select value={pdfPaper} onChange={(event) => setPdfPaper(event.target.value as PaperSize)}><option value="a4">A4</option><option value="a3">A3</option><option value="custom">自定义</option></select></label>
+                        <label><span>方向</span><select value={pdfOrientation} onChange={(event) => setPdfOrientation(event.target.value as PrintOrientation)}><option value="auto">自动</option><option value="portrait">纵向</option><option value="landscape">横向</option></select></label>
+                        <label><span>比例</span><select value={pdfScaleMode} onChange={(event) => setPdfScaleMode(event.target.value as 'actual' | 'fit')}><option value="actual">100% 原尺寸</option><option value="fit">适合纸张</option></select></label>
+                        <label><span>格距 mm</span><input type="number" min="1" max="12" step="0.1" value={pdfBeadSize} onChange={(event) => setPdfBeadSize(Math.max(1, Number(event.target.value) || 2.6))} /></label>
+                      </div>
+                      {pdfPaper === 'custom' && <div className="custom-paper-row"><label>宽 <input type="number" min="100" value={pdfCustomPaper.width} onChange={(event) => setPdfCustomPaper((value) => ({ ...value, width: Number(event.target.value) }))} /> mm</label><label>高 <input type="number" min="100" value={pdfCustomPaper.height} onChange={(event) => setPdfCustomPaper((value) => ({ ...value, height: Number(event.target.value) }))} /> mm</label></div>}
+                      <small>打印时请选择“实际大小 / 100%”，系统会自动排版并附上色号表。</small>
+                      <div><button type="button" onClick={() => exportPhysicalPdf(false)} disabled={isExporting}><FileDown size={14} /> 普通 PDF</button><button type="button" onClick={() => exportPhysicalPdf(true)} disabled={isExporting}><FlipHorizontal2 size={14} /> 镜像 PDF</button></div>
+                    </div>
+                  </div>
+                </details>
               </div>
             </>
           )}
