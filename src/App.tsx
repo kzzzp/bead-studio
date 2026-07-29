@@ -2,6 +2,7 @@ import {
   Check,
   ChevronDown,
   CircleHelp,
+  Crop,
   Download,
   FileDown,
   FileCode2,
@@ -24,9 +25,11 @@ import {
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import JSZip from 'jszip'
+import { CompositionEditor } from './CompositionEditor'
 import { CutoutEditor } from './CutoutEditor'
 import { PatternEditor } from './PatternEditor'
 import { createFullExportPlan } from './exportSizing'
+import { DEFAULT_IMAGE_TRANSFORM } from './imageComposition'
 import { processImage, type BeadPattern, type ProcessOptions } from './imageProcessing'
 import { cutOutPerson } from './personCutout'
 import { canvasToPngBlob, createPatternSvg, downloadBlob, downloadCanvas, downloadText, drawPattern } from './patternRenderer'
@@ -56,6 +59,7 @@ const DEFAULT_OPTIONS: ProcessOptions = {
   backgroundTolerance: 22,
   dither: false,
   fit: 'contain',
+  transform: DEFAULT_IMAGE_TRANSFORM,
 }
 
 const DEFAULT_WATERMARK_TEXT = '@小Z拼豆图纸定制'
@@ -201,6 +205,7 @@ function App() {
   const [isExporting, setIsExporting] = useState(false)
   const [isCuttingOut, setIsCuttingOut] = useState(false)
   const [isEditingCutout, setIsEditingCutout] = useState(false)
+  const [isEditingComposition, setIsEditingComposition] = useState(false)
   const [isEditingPattern, setIsEditingPattern] = useState(false)
   const [cutoutInfo, setCutoutInfo] = useState('')
   const [watermarkEnabled, setWatermarkEnabled] = useState(() => window.localStorage.getItem('bead-studio-watermark-enabled') === 'true')
@@ -284,6 +289,18 @@ function App() {
     })
   }
 
+  const setAspectRatio = (ratio: [number, number] | null) => {
+    if (!ratio) {
+      setLockedRatio(false)
+      return
+    }
+    setLockedRatio(true)
+    setOptions((current) => ({
+      ...current,
+      height: Math.max(8, Math.min(120, Math.round(current.width * ratio[1] / ratio[0]))),
+    }))
+  }
+
   const loadUrl = (url: string, name: string) => {
     const image = new Image()
     image.onload = () => {
@@ -294,6 +311,7 @@ function App() {
       })
       setIsCuttingOut(false)
       setIsEditingCutout(false)
+      setIsEditingComposition(false)
       setCutoutInfo('')
       setSource((old) => {
         if (old?.url.startsWith('blob:')) URL.revokeObjectURL(old.url)
@@ -302,6 +320,7 @@ function App() {
       setOptions((current) => ({
         ...current,
         height: Math.max(8, Math.min(120, Math.round(current.width / (image.naturalWidth / image.naturalHeight)))),
+        transform: DEFAULT_IMAGE_TRANSFORM,
       }))
     }
     image.onerror = () => {
@@ -590,12 +609,24 @@ function App() {
               <label><span>高</span><input type="number" min="8" max="120" value={options.height} onChange={(event) => setDimension('height', Number(event.target.value))} /><small>格</small></label>
             </div>
             <div className="preset-row">
-              {[29, 40, 58].map((size) => <button key={size} type="button" className={options.width === size ? 'is-active' : ''} onClick={() => setDimension('width', size)}>{size} 格</button>)}
+              {[29, 40, 52, 58, 104].map((size) => <button key={size} type="button" className={options.width === size ? 'is-active' : ''} onClick={() => setDimension('width', size)}>{size} 格</button>)}
+            </div>
+            <div className="ratio-preset-row" aria-label="图纸比例">
+              {([
+                ['1:1', [1, 1]],
+                ['3:4', [3, 4]],
+                ['4:3', [4, 3]],
+                ['9:16', [9, 16]],
+              ] as const).map(([label, ratio]) => (
+                <button key={label} type="button" className={options.width * ratio[1] === options.height * ratio[0] && lockedRatio ? 'is-active' : ''} onClick={() => setAspectRatio([...ratio])}>{label}</button>
+              ))}
+              <button type="button" className={!lockedRatio ? 'is-active' : ''} onClick={() => setAspectRatio(null)}>自由</button>
             </div>
             <div className="segmented wide">
               <button type="button" className={options.fit === 'contain' ? 'is-active' : ''} onClick={() => updateOption('fit', 'contain')}>完整放入</button>
               <button type="button" className={options.fit === 'cover' ? 'is-active' : ''} onClick={() => updateOption('fit', 'cover')}>铺满裁切</button>
             </div>
+            <button type="button" className="composition-launch" disabled={!patternSource} onClick={() => setIsEditingComposition(true)}><Crop size={14} /> 裁剪与构图</button>
           </section>
 
           <section className={`settings-section ${!source ? 'is-muted' : ''}`}>
@@ -759,6 +790,17 @@ function App() {
           onRedo={redoPatternEdit}
           onReset={resetPatternEdits}
           onClose={() => setIsEditingPattern(false)}
+        />
+      )}
+      {patternSource && isEditingComposition && (
+        <CompositionEditor
+          image={patternSource.image}
+          width={options.width}
+          height={options.height}
+          fit={options.fit}
+          transform={options.transform}
+          onApply={(transform) => updateOption('transform', transform)}
+          onClose={() => setIsEditingComposition(false)}
         />
       )}
     </div>

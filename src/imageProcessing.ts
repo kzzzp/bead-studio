@@ -1,4 +1,5 @@
 import { MARD_PALETTE, rgbToLab, type BeadColor, type Lab, type RGB } from './palette.ts'
+import { calculateImagePlacement, type ImageTransform } from './imageComposition.ts'
 
 export interface ProcessOptions {
   width: number
@@ -11,6 +12,7 @@ export interface ProcessOptions {
   backgroundTolerance: number
   dither: boolean
   fit: 'contain' | 'cover'
+  transform: ImageTransform
 }
 
 export interface PatternCell {
@@ -188,29 +190,21 @@ function sampleImage(image: HTMLImageElement, options: ProcessOptions) {
   context.imageSmoothingEnabled = true
   context.imageSmoothingQuality = 'high'
 
-  const sourceRatio = image.naturalWidth / image.naturalHeight
-  const targetRatio = options.width / options.height
-  let drawWidth = options.width
-  let drawHeight = options.height
-  let offsetX = 0
-  let offsetY = 0
-  if (options.fit === 'contain') {
-    if (sourceRatio > targetRatio) {
-      drawHeight = options.width / sourceRatio
-      offsetY = (options.height - drawHeight) / 2
-    } else {
-      drawWidth = options.height * sourceRatio
-      offsetX = (options.width - drawWidth) / 2
-    }
-  } else if (sourceRatio > targetRatio) {
-    drawWidth = options.height * sourceRatio
-    offsetX = (options.width - drawWidth) / 2
-  } else {
-    drawHeight = options.width / sourceRatio
-    offsetY = (options.height - drawHeight) / 2
-  }
+  const placement = calculateImagePlacement(
+    image.naturalWidth,
+    image.naturalHeight,
+    options.width,
+    options.height,
+    options.fit,
+    options.transform,
+  )
   context.clearRect(0, 0, options.width, options.height)
-  context.drawImage(image, offsetX, offsetY, drawWidth, drawHeight)
+  context.save()
+  context.translate(placement.center.x, placement.center.y)
+  context.rotate(options.transform.rotation * Math.PI / 180)
+  context.scale(options.transform.flipHorizontal ? -placement.scale : placement.scale, placement.scale)
+  context.drawImage(image, -image.naturalWidth / 2, -image.naturalHeight / 2)
+  context.restore()
   return context.getImageData(0, 0, options.width, options.height)
 }
 

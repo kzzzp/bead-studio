@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import { processImageData, type ProcessOptions } from '../src/imageProcessing.ts'
+import { DEFAULT_IMAGE_TRANSFORM } from '../src/imageComposition.ts'
 
 const options: ProcessOptions = {
   width: 2,
@@ -13,6 +14,7 @@ const options: ProcessOptions = {
   backgroundTolerance: 22,
   dither: false,
   fit: 'contain',
+  transform: DEFAULT_IMAGE_TRANSFORM,
 }
 
 describe('processImageData', () => {
