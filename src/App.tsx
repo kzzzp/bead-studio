@@ -1,5 +1,6 @@
 import {
   Check,
+  CirclePlay,
   ChevronDown,
   CircleHelp,
   Crop,
@@ -7,6 +8,7 @@ import {
   FileDown,
   FileCode2,
   FlipHorizontal2,
+  FolderOpen,
   Grid3X3,
   Image as ImageIcon,
   Layers3,
@@ -17,6 +19,7 @@ import {
   Pencil,
   Plus,
   RotateCcw,
+  Save,
   ShieldCheck,
   Sparkles,
   Stamp,
@@ -27,15 +30,21 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import JSZip from 'jszip'
 import { CompositionEditor } from './CompositionEditor'
+import { CONVERSION_MODES } from './conversionModes'
 import { CutoutEditor } from './CutoutEditor'
 import { PaletteManager, type CustomPaletteDefinition } from './PaletteManager'
 import { PatternEditor } from './PatternEditor'
+import { ProjectManager } from './ProjectManager'
+import { ProgressTracker } from './ProgressTracker'
 import { createFullExportPlan } from './exportSizing'
 import { DEFAULT_IMAGE_TRANSFORM } from './imageComposition'
 import { processImage, type BeadPattern, type ProcessOptions } from './imageProcessing'
 import { getBuiltInPalette, parseCustomPalette, removeDisabledColors, type BuiltInPaletteId } from './paletteRegistry'
 import { mirrorPattern } from './patternEditing'
 import type { PaperSize, PrintOrientation } from './printLayout'
+import { duplicateProjectSnapshot, validateProjectSnapshot, type ProjectSnapshot } from './projectFormat'
+import { deleteProjectSnapshot, listProjectSnapshots, saveProjectSnapshot } from './projectStore'
+import { createProgressStorageKey } from './progressTracking'
 import { cutOutPerson } from './personCutout'
 import { canvasToPngBlob, createPatternSvg, downloadBlob, downloadCanvas, downloadText, drawPattern } from './patternRenderer'
 
@@ -45,7 +54,7 @@ type SourceImage = {
   name: string
 }
 
-type PreviewMode = 'pattern' | 'pixel' | 'original'
+type PreviewMode = 'pattern' | 'pixel' | 'beads' | 'mirror' | 'board' | 'poster' | 'original'
 
 type PatternHistoryState = {
   source: BeadPattern | null
@@ -74,6 +83,17 @@ function loadDisabledPaletteColors() {
   }
 }
 
+async function imageUrlToDataUrl(url: string) {
+  if (url.startsWith('data:image/')) return url
+  const blob = await fetch(url).then((response) => response.blob())
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => typeof reader.result === 'string' ? resolve(reader.result) : reject(new Error('图片编码失败'))
+    reader.onerror = () => reject(reader.error ?? new Error('图片编码失败'))
+    reader.readAsDataURL(blob)
+  })
+}
+
 const DEFAULT_OPTIONS: ProcessOptions = {
   width: 40,
   height: 40,
@@ -86,6 +106,7 @@ const DEFAULT_OPTIONS: ProcessOptions = {
   dither: false,
   fit: 'contain',
   transform: DEFAULT_IMAGE_TRANSFORM,
+  mode: 'auto',
 }
 
 const DEFAULT_WATERMARK_TEXT = '@小Z拼豆图纸定制'
@@ -132,7 +153,7 @@ function RangeControl({
   suffix?: string
   onChange: (value: number) => void
 }) {
-  const progress = ((value - min) / (max - min)) * 100
+  const progress = ((value - min) / Math.max(1, max - min)) * 100
   return (
     <label className="range-control">
       <span className="control-label"><span>{label}</span><b>{value}{suffix}</b></span>
@@ -163,17 +184,22 @@ function PatternPreview({
   zoom: number
 }) {
   const ref = useRef<HTMLCanvasElement>(null)
+  const displayPattern = useMemo(() => mode === 'mirror' ? mirrorPattern(pattern) : pattern, [mode, pattern])
   useEffect(() => {
     if (!ref.current || mode === 'original') return
-    drawPattern(ref.current, pattern, {
+    drawPattern(ref.current, displayPattern, {
       cellSize: Math.max(12, Math.round(zoom / 4)),
-      coordinates: mode === 'pattern',
-      codes: mode === 'pattern' && showCodes,
-      grid: mode === 'pattern',
-      boardLines: mode === 'pattern' && boardLines,
+      coordinates: mode === 'pattern' || mode === 'mirror' || mode === 'board',
+      codes: (mode === 'pattern' || mode === 'mirror' || mode === 'board') && showCodes,
+      grid: mode === 'pattern' || mode === 'mirror' || mode === 'board',
+      boardLines: mode === 'board' || ((mode === 'pattern' || mode === 'mirror') && boardLines),
+      beadStyle: mode === 'beads' ? 'circle' : 'square',
+      title: mode === 'poster' ? '我的拼豆作品' : undefined,
+      legend: mode === 'poster',
+      legendPosition: 'bottom',
       pixelRatio: Math.max(2, Math.min(window.devicePixelRatio || 1, 2.5)),
     })
-  }, [pattern, mode, showCodes, boardLines, zoom])
+  }, [displayPattern, mode, showCodes, boardLines, zoom])
   return <canvas ref={ref} className="pattern-canvas" aria-label="拼豆图纸预览" />
 }
 
@@ -234,9 +260,17 @@ function App() {
   const [isEditingComposition, setIsEditingComposition] = useState(false)
   const [isEditingPattern, setIsEditingPattern] = useState(false)
   const [isManagingPalette, setIsManagingPalette] = useState(false)
+  const [isManagingProjects, setIsManagingProjects] = useState(false)
+  const [isTrackingProgress, setIsTrackingProgress] = useState(false)
+  const [projectSnapshots, setProjectSnapshots] = useState<ProjectSnapshot[]>([])
+  const [projectName, setProjectName] = useState('未命名拼豆工程')
+  const [isSavingProject, setIsSavingProject] = useState(false)
+  const [autoSaveCandidate, setAutoSaveCandidate] = useState<ProjectSnapshot | null>(null)
   const [pdfPaper, setPdfPaper] = useState<PaperSize>('a4')
-  const [pdfOrientation, setPdfOrientation] = useState<PrintOrientation>('portrait')
-  const [pdfBeadSize, setPdfBeadSize] = useState<2.6 | 5>(2.6)
+  const [pdfOrientation, setPdfOrientation] = useState<PrintOrientation>('auto')
+  const [pdfBeadSize, setPdfBeadSize] = useState(2.6)
+  const [pdfScaleMode, setPdfScaleMode] = useState<'actual' | 'fit'>('actual')
+  const [pdfCustomPaper, setPdfCustomPaper] = useState({ width: 210, height: 297 })
   const [customPalette, setCustomPalette] = useState<CustomPaletteDefinition | null>(loadCustomPalette)
   const [paletteId, setPaletteId] = useState<PaletteSelectionId>(() => {
     const saved = window.localStorage.getItem('bead-studio-palette-id') as PaletteSelectionId | null
@@ -252,6 +286,8 @@ function App() {
   })
   const fileRef = useRef<HTMLInputElement>(null)
   const cutoutRequestRef = useRef(0)
+  const autoSaveRequestRef = useRef(0)
+  const pendingRestoredPatternRef = useRef<BeadPattern | null>(null)
   const patternSource = cutout ?? source
   const selectedPalette = paletteId === 'custom' && customPalette ? customPalette : getBuiltInPalette(paletteId === 'custom' ? 'mard' : paletteId)
   const selectedDisabledCodes = useMemo(() => new Set(disabledPaletteColors[paletteId] ?? []), [disabledPaletteColors, paletteId])
@@ -303,9 +339,15 @@ function App() {
     : generatedPattern
 
   useEffect(() => {
-    setPatternHistory(generatedPattern
-      ? { source: generatedPattern, items: [generatedPattern], index: 0 }
-      : { source: null, items: [], index: -1 })
+    const restored = pendingRestoredPatternRef.current
+    if (generatedPattern && restored && restored.width === generatedPattern.width && restored.height === generatedPattern.height) {
+      pendingRestoredPatternRef.current = null
+      setPatternHistory({ source: generatedPattern, items: [generatedPattern, restored], index: 1 })
+    } else {
+      setPatternHistory(generatedPattern
+        ? { source: generatedPattern, items: [generatedPattern], index: 0 }
+        : { source: null, items: [], index: -1 })
+    }
     setIsEditingPattern(false)
   }, [generatedPattern])
 
@@ -384,7 +426,7 @@ function App() {
     }))
   }
 
-  const loadUrl = (url: string, name: string) => {
+  const loadUrl = (url: string, name: string, restoredProject?: ProjectSnapshot) => {
     const image = new Image()
     image.onload = () => {
       cutoutRequestRef.current += 1
@@ -396,15 +438,17 @@ function App() {
       setIsEditingCutout(false)
       setIsEditingComposition(false)
       setCutoutInfo('')
+      pendingRestoredPatternRef.current = restoredProject?.pattern ?? null
+      setProjectName(restoredProject?.name.replace(/^(自动保存 · )+/, '') ?? name.replace(/\.[^.]+$/, ''))
       setSource((old) => {
         if (old?.url.startsWith('blob:')) URL.revokeObjectURL(old.url)
         return { image, url, name }
       })
-      setOptions((current) => ({
-        ...current,
-        height: Math.max(8, Math.min(120, Math.round(current.width / (image.naturalWidth / image.naturalHeight)))),
-        transform: DEFAULT_IMAGE_TRANSFORM,
-      }))
+      setOptions((current) => restoredProject?.options ?? ({
+          ...current,
+          height: Math.max(8, Math.min(120, Math.round(current.width / (image.naturalWidth / image.naturalHeight)))),
+          transform: DEFAULT_IMAGE_TRANSFORM,
+        }))
     }
     image.onerror = () => {
       if (url.startsWith('blob:')) URL.revokeObjectURL(url)
@@ -430,6 +474,118 @@ function App() {
     const dataUrl = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(SAMPLE_SVG)}`
     loadUrl(dataUrl, '橘猫示例.svg')
   }
+
+  const refreshProjectSnapshots = async () => {
+    setProjectSnapshots(await listProjectSnapshots())
+  }
+
+  const openProjectManager = async () => {
+    try {
+      await refreshProjectSnapshots()
+      setIsManagingProjects(true)
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : '本地工程读取失败')
+    }
+  }
+
+  const createCurrentSnapshot = async (): Promise<ProjectSnapshot> => {
+    if (!patternSource || !pattern) throw new Error('请先生成图纸')
+    return {
+      version: 1,
+      id: crypto.randomUUID(),
+      name: projectName.trim() || '未命名拼豆工程',
+      savedAt: new Date().toISOString(),
+      sourceName: patternSource.name,
+      sourceDataUrl: await imageUrlToDataUrl(patternSource.url),
+      options,
+      paletteId,
+      disabledPaletteColors: [...selectedDisabledCodes],
+      customPalette,
+      pattern,
+      completedProgress: (() => {
+        try {
+          const saved = JSON.parse(window.localStorage.getItem(createProgressStorageKey(pattern)) ?? '[]') as unknown
+          return Array.isArray(saved) ? saved.filter((index): index is number => Number.isInteger(index)) : []
+        } catch {
+          return []
+        }
+      })(),
+    }
+  }
+
+  const saveCurrentProject = async () => {
+    if (isSavingProject) return
+    setIsSavingProject(true)
+    try {
+      const snapshot = await createCurrentSnapshot()
+      await saveProjectSnapshot(snapshot)
+      setExportInfo(`工程已保存 · ${snapshot.name} · ${new Date(snapshot.savedAt).toLocaleTimeString('zh-CN')}`)
+      if (isManagingProjects) await refreshProjectSnapshots()
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : '工程保存失败')
+    } finally {
+      setIsSavingProject(false)
+    }
+  }
+
+  const loadProjectSnapshot = (snapshot: ProjectSnapshot) => {
+    if (snapshot.paletteId === 'custom' && snapshot.customPalette) setCustomPalette(snapshot.customPalette)
+    setPaletteId(snapshot.paletteId === 'custom' && !snapshot.customPalette ? 'mard' : snapshot.paletteId)
+    setDisabledPaletteColors((current) => ({ ...current, [snapshot.paletteId]: snapshot.disabledPaletteColors }))
+    window.localStorage.setItem(createProgressStorageKey(snapshot.pattern), JSON.stringify(snapshot.completedProgress ?? []))
+    loadUrl(snapshot.sourceDataUrl, snapshot.sourceName, snapshot)
+    setIsManagingProjects(false)
+    setExportInfo(`已打开工程 · ${snapshot.name}`)
+  }
+
+  const duplicateProject = async (snapshot: ProjectSnapshot) => {
+    const copy = duplicateProjectSnapshot(snapshot, crypto.randomUUID(), new Date().toISOString())
+    await saveProjectSnapshot(copy)
+    await refreshProjectSnapshots()
+  }
+
+  const exportProjectFile = (snapshot: ProjectSnapshot) => {
+    downloadText(JSON.stringify(snapshot), 'application/json;charset=utf-8', `${snapshot.name}.bead-project`)
+  }
+
+  const importProjectFile = async (file: File) => {
+    try {
+      const snapshot = validateProjectSnapshot(JSON.parse(await file.text()))
+      await saveProjectSnapshot(snapshot)
+      await refreshProjectSnapshots()
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : '工程文件导入失败')
+    }
+  }
+
+  const removeProject = async (snapshot: ProjectSnapshot) => {
+    if (!window.confirm(`确定删除“${snapshot.name}”这个本地快照吗？`)) return
+    await deleteProjectSnapshot(snapshot.id)
+    await refreshProjectSnapshots()
+  }
+
+  useEffect(() => {
+    void listProjectSnapshots().then((projects) => {
+      const autoSave = projects.find((project) => project.id === 'bead-studio-auto-save')
+      if (autoSave) setAutoSaveCandidate(autoSave)
+    }).catch(() => undefined)
+  }, [])
+
+  useEffect(() => {
+    const request = ++autoSaveRequestRef.current
+    if (!pattern || !patternSource) return
+    const timer = window.setTimeout(() => {
+      void createCurrentSnapshot().then((snapshot) => {
+        if (request !== autoSaveRequestRef.current) return undefined
+        return saveProjectSnapshot({
+          ...snapshot,
+          id: 'bead-studio-auto-save',
+          name: `自动保存 · ${snapshot.name.replace(/^(自动保存 · )+/, '')}`,
+        })
+      }).catch(() => undefined)
+    }, 1500)
+    return () => window.clearTimeout(timer)
+  }, [customPalette, disabledPaletteColors, isTrackingProgress, options, paletteId, pattern, patternSource, projectName])
 
   const clearSource = () => {
     cutoutRequestRef.current += 1
@@ -544,6 +700,59 @@ function App() {
     }
   }
 
+  const exportNormalAndMirror = async () => {
+    if (!pattern || isExporting) return
+    setIsExporting(true)
+    try {
+      const zip = new JSZip()
+      for (const mirrored of [false, true]) {
+        const exportPattern = mirrored ? mirrorPattern(pattern) : pattern
+        const plan = createFullExportPlan(exportPattern.width, exportPattern.height, exportPattern.usage.length)
+        const canvas = document.createElement('canvas')
+        drawPattern(canvas, exportPattern, {
+          cellSize: plan.cellSize, coordinates: true, codes: true, grid: true, boardLines,
+          legend: true, pixelRatio: 1, pixelText: plan.pixelText, legendPosition: plan.legendPosition,
+          coordinateFontScale: plan.coordinateFontScale, codeFontScale: plan.codeFontScale, watermark,
+        })
+        zip.file(`${mirrored ? '镜像版' : '普通版'}-${pattern.width}x${pattern.height}.png`, await canvasToPngBlob(canvas))
+      }
+      downloadBlob(await zip.generateAsync({ type: 'blob' }), `拼豆图纸-普通加镜像-${pattern.width}x${pattern.height}.zip`)
+      setExportInfo('已生成普通版＋镜像版 ZIP；图案方向不同，文字与坐标均保持正向')
+    } catch (error) {
+      console.error(error)
+      window.alert('普通版与镜像版打包失败，请分别导出。')
+    } finally {
+      setIsExporting(false)
+    }
+  }
+
+  const exportCurrentStyle = async () => {
+    if (!pattern || previewMode === 'original' || isExporting) return
+    setIsExporting(true)
+    try {
+      const displayPattern = previewMode === 'mirror' ? mirrorPattern(pattern) : pattern
+      const plan = createFullExportPlan(displayPattern.width, displayPattern.height, displayPattern.usage.length)
+      const canvas = document.createElement('canvas')
+      drawPattern(canvas, displayPattern, {
+        cellSize: plan.cellSize,
+        coordinates: previewMode === 'pattern' || previewMode === 'mirror' || previewMode === 'board',
+        codes: (previewMode === 'pattern' || previewMode === 'mirror' || previewMode === 'board') && showCodes,
+        grid: previewMode === 'pattern' || previewMode === 'mirror' || previewMode === 'board',
+        boardLines: previewMode === 'board' || ((previewMode === 'pattern' || previewMode === 'mirror') && boardLines),
+        beadStyle: previewMode === 'beads' ? 'circle' : 'square',
+        title: previewMode === 'poster' ? projectName : undefined,
+        legend: previewMode === 'poster',
+        legendPosition: plan.legendPosition,
+        pixelRatio: 1,
+        watermark,
+      })
+      downloadBlob(await canvasToPngBlob(canvas), `拼豆-${previewMode}-${pattern.width}x${pattern.height}.png`)
+      setExportInfo(`已按当前“${previewMode}”展示样式导出 PNG`)
+    } finally {
+      setIsExporting(false)
+    }
+  }
+
   const exportPhysicalPdf = async (mirrored: boolean) => {
     if (!pattern || isExporting) return
     setIsExporting(true)
@@ -557,12 +766,40 @@ function App() {
         overlapCells: 2,
         paletteName: selectedPalette.name,
         mirrored,
+        customPaperMm: pdfPaper === 'custom' ? pdfCustomPaper : undefined,
+        scaleMode: pdfScaleMode,
       })
       downloadBlob(blob, `拼豆真实尺寸-${pdfPaper.toUpperCase()}-${pdfBeadSize}mm${mirrored ? '-镜像' : ''}.pdf`)
       setExportInfo(`已生成 100% 实际尺寸 PDF · ${layout.pages.length} 张图纸页 + 1 张色号表 · ${(blob.size / 1024).toFixed(0)} KB`)
     } catch (error) {
       console.error(error)
       window.alert('PDF 生成失败，请减少图纸尺寸后重试。')
+    } finally {
+      setIsExporting(false)
+    }
+  }
+
+  const exportBothPhysicalPdfs = async () => {
+    if (!pattern || isExporting) return
+    setIsExporting(true)
+    try {
+      const { createPhysicalPdfBlob } = await import('./pdfExport')
+      const zip = new JSZip()
+      for (const mirrored of [false, true]) {
+        const exportPattern = mirrored ? mirrorPattern(pattern) : pattern
+        const { blob } = createPhysicalPdfBlob(exportPattern, {
+          paper: pdfPaper, orientation: pdfOrientation, beadSizeMm: pdfBeadSize, overlapCells: 2,
+          paletteName: selectedPalette.name, mirrored,
+          customPaperMm: pdfPaper === 'custom' ? pdfCustomPaper : undefined,
+          scaleMode: pdfScaleMode,
+        })
+        zip.file(`${mirrored ? '镜像版' : '普通版'}-${pattern.width}x${pattern.height}.pdf`, blob)
+      }
+      downloadBlob(await zip.generateAsync({ type: 'blob' }), `拼豆实际尺寸PDF-普通加镜像-${pattern.width}x${pattern.height}.zip`)
+      setExportInfo('已生成普通版＋镜像版实际尺寸 PDF ZIP')
+    } catch (error) {
+      console.error(error)
+      window.alert('PDF 打包失败，请分别导出普通版和镜像版。')
     } finally {
       setIsExporting(false)
     }
@@ -675,6 +912,13 @@ function App() {
         </div>
       </header>
 
+      {autoSaveCandidate && (
+        <div className="restore-banner" role="status">
+          <span><strong>发现上次自动保存</strong>{autoSaveCandidate.pattern.width} × {autoSaveCandidate.pattern.height} 格 · {new Date(autoSaveCandidate.savedAt).toLocaleString('zh-CN')}</span>
+          <div><button type="button" onClick={() => { loadProjectSnapshot(autoSaveCandidate); setAutoSaveCandidate(null) }}>恢复工程</button><button type="button" onClick={() => setAutoSaveCandidate(null)}>暂不恢复</button></div>
+        </div>
+      )}
+
       <main className="workspace">
         <aside className="control-panel panel">
           <div className="panel-heading">
@@ -738,6 +982,14 @@ function App() {
           </section>
 
           <section className={`settings-section ${!source ? 'is-muted' : ''}`}>
+            <div className="section-title"><span><WandSparkles size={16} /> 转换模式</span><em>{CONVERSION_MODES.find((mode) => mode.id === options.mode)?.label}</em></div>
+            <div className="conversion-mode-grid">
+              {CONVERSION_MODES.map((mode) => <button key={mode.id} type="button" className={options.mode === mode.id ? 'is-active' : ''} onClick={() => updateOption('mode', mode.id)} title={mode.description}>{mode.label}</button>)}
+            </div>
+            <small className="conversion-hint">{CONVERSION_MODES.find((mode) => mode.id === options.mode)?.description}</small>
+          </section>
+
+          <section className={`settings-section ${!source ? 'is-muted' : ''}`}>
             <div className="section-title"><span><Palette size={16} /> 颜色处理</span><em>{selectedPalette.name}</em></div>
             <div className="palette-select-row">
               <select value={paletteId} onChange={(event) => selectPalette(event.target.value as PaletteSelectionId)} aria-label="选择豆子色卡">
@@ -788,7 +1040,11 @@ function App() {
               <button type="button" className={previewMode === 'original' ? 'is-active' : ''} onClick={() => setPreviewMode('original')}><ImageIcon size={14} /> 原图</button>
             </div>
             <div className="preview-actions">
+              <select className="display-style-select" aria-label="展示样式" value={previewMode} onChange={(event) => setPreviewMode(event.target.value as PreviewMode)}>
+                <option value="pattern">色号图</option><option value="pixel">纯色块图</option><option value="beads">圆珠效果图</option><option value="mirror">镜像图</option><option value="board">1:1 垫板图</option><option value="poster">分享海报</option><option value="original">原图</option>
+              </select>
               <button type="button" className="edit-pattern-button" onClick={() => setIsEditingPattern(true)} disabled={!pattern}><Pencil size={13} /> 精修图纸</button>
+              <button type="button" className="progress-tracker-button" onClick={() => setIsTrackingProgress(true)} disabled={!pattern}><CirclePlay size={13} /> 开始拼豆</button>
               <label className="compact-check"><input type="checkbox" checked={showCodes} onChange={(event) => setShowCodes(event.target.checked)} /><Check size={11} /> 色号</label>
               <label className="compact-check"><input type="checkbox" checked={boardLines} onChange={(event) => setBoardLines(event.target.checked)} /><Check size={11} /> 拼板线</label>
               <span className="toolbar-divider" />
@@ -856,6 +1112,11 @@ function App() {
               <div className="export-card">
                 <h3>导出你的图纸</h3>
                 <p>默认导出一张完整高清图，不拆分；SVG 可无损放大，分页图仅用于分板打印。</p>
+                <div className="project-save-row">
+                  <input value={projectName} maxLength={60} onChange={(event) => setProjectName(event.target.value)} aria-label="工程名称" placeholder="工程名称" />
+                  <button type="button" onClick={saveCurrentProject} disabled={isSavingProject}><Save size={14} /> {isSavingProject ? '保存中' : '保存工程'}</button>
+                  <button type="button" onClick={openProjectManager}><FolderOpen size={14} /> 工程管理</button>
+                </div>
                 <div className="watermark-control">
                   <Toggle label="导出时加水印" checked={watermarkEnabled} onChange={setWatermarkEnabled} />
                   {watermarkEnabled && (
@@ -880,8 +1141,10 @@ function App() {
                   <button type="button" className="export-primary" onClick={() => exportFullPattern(false)} disabled={isExporting}><Download size={16} /> {isExporting ? '正在生成图纸…' : '普通高清图'}</button>
                   <button type="button" className="export-mirror" onClick={() => exportFullPattern(true)} disabled={isExporting}><FlipHorizontal2 size={16} /> 镜像成品图</button>
                 </div>
+                <button type="button" className="export-both" onClick={exportNormalAndMirror} disabled={isExporting}><Download size={14} /> 普通版＋镜像版 ZIP</button>
                 {exportInfo && <span className="export-status"><Check size={13} /> {exportInfo}</span>}
                 <div className="export-actions">
+                  <button type="button" onClick={exportCurrentStyle} disabled={isExporting || previewMode === 'original'}><Download size={14} /> 当前样式 PNG</button>
                   <button type="button" onClick={exportSvg} disabled={isExporting}><FileCode2 size={14} /> SVG 无损图</button>
                   <button type="button" onClick={exportPagedPattern} disabled={isExporting}><ImageIcon size={14} /> 分页打印</button>
                   <button type="button" onClick={() => downloadCsv(pattern)} disabled={isExporting}><FileDown size={14} /> CSV 清单</button>
@@ -889,12 +1152,14 @@ function App() {
                 <div className="pdf-export-box">
                   <strong>100% 实际尺寸 PDF</strong>
                   <div className="pdf-options">
-                    <label><span>纸张</span><select value={pdfPaper} onChange={(event) => setPdfPaper(event.target.value as PaperSize)}><option value="a4">A4</option><option value="a3">A3</option></select></label>
-                    <label><span>方向</span><select value={pdfOrientation} onChange={(event) => setPdfOrientation(event.target.value as PrintOrientation)}><option value="portrait">纵向</option><option value="landscape">横向</option></select></label>
-                    <label><span>豆距</span><select value={pdfBeadSize} onChange={(event) => setPdfBeadSize(Number(event.target.value) as 2.6 | 5)}><option value="2.6">2.6 mm</option><option value="5">5 mm</option></select></label>
+                    <label><span>纸张</span><select value={pdfPaper} onChange={(event) => setPdfPaper(event.target.value as PaperSize)}><option value="a4">A4</option><option value="a3">A3</option><option value="custom">自定义</option></select></label>
+                    <label><span>方向</span><select value={pdfOrientation} onChange={(event) => setPdfOrientation(event.target.value as PrintOrientation)}><option value="auto">自动</option><option value="portrait">纵向</option><option value="landscape">横向</option></select></label>
+                    <label><span>比例</span><select value={pdfScaleMode} onChange={(event) => setPdfScaleMode(event.target.value as 'actual' | 'fit')}><option value="actual">100% 原尺寸</option><option value="fit">适合纸张</option></select></label>
+                    <label><span>格距 mm</span><input type="number" min="1" max="12" step="0.1" value={pdfBeadSize} onChange={(event) => setPdfBeadSize(Math.max(1, Number(event.target.value) || 2.6))} /></label>
                   </div>
+                  {pdfPaper === 'custom' && <div className="custom-paper-row"><label>宽 <input type="number" min="100" value={pdfCustomPaper.width} onChange={(event) => setPdfCustomPaper((value) => ({ ...value, width: Number(event.target.value) }))} /> mm</label><label>高 <input type="number" min="100" value={pdfCustomPaper.height} onChange={(event) => setPdfCustomPaper((value) => ({ ...value, height: Number(event.target.value) }))} /> mm</label></div>}
                   <small>自动分页并保留 2 格重叠区、裁切定位标记与独立色号表；打印时请选择“实际大小 / 100%”。</small>
-                  <div><button type="button" onClick={() => exportPhysicalPdf(false)} disabled={isExporting}><FileDown size={14} /> 普通 PDF</button><button type="button" onClick={() => exportPhysicalPdf(true)} disabled={isExporting}><FlipHorizontal2 size={14} /> 镜像 PDF</button></div>
+                  <div><button type="button" onClick={() => exportPhysicalPdf(false)} disabled={isExporting}><FileDown size={14} /> 普通 PDF</button><button type="button" onClick={() => exportPhysicalPdf(true)} disabled={isExporting}><FlipHorizontal2 size={14} /> 镜像 PDF</button><button type="button" onClick={exportBothPhysicalPdfs} disabled={isExporting}><Download size={14} /> 两版 ZIP</button></div>
                 </div>
               </div>
             </>
@@ -947,6 +1212,20 @@ function App() {
           onEnableAll={() => setDisabledPaletteColors((current) => ({ ...current, [paletteId]: [] }))}
           onClose={() => setIsManagingPalette(false)}
         />
+      )}
+      {isManagingProjects && (
+        <ProjectManager
+          projects={projectSnapshots}
+          onLoad={loadProjectSnapshot}
+          onDuplicate={(project) => { void duplicateProject(project) }}
+          onExport={exportProjectFile}
+          onDelete={(project) => { void removeProject(project) }}
+          onImport={(file) => { void importProjectFile(file) }}
+          onClose={() => setIsManagingProjects(false)}
+        />
+      )}
+      {pattern && isTrackingProgress && (
+        <ProgressTracker pattern={pattern} onClose={() => setIsTrackingProgress(false)} />
       )}
     </div>
   )

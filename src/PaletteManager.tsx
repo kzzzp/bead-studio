@@ -2,6 +2,7 @@ import { Check, FileUp, LockKeyhole, Palette, Power, X } from 'lucide-react'
 import { useRef, useState } from 'react'
 import {
   BUILT_IN_PALETTES,
+  findClosestColors,
   parseCustomPalette,
   type BuiltInPaletteId,
   type PaletteDefinition,
@@ -41,6 +42,11 @@ export function PaletteManager({
   const fileRef = useRef<HTMLInputElement>(null)
   const [customName, setCustomName] = useState(customPalette?.name ?? '我的色卡')
   const [message, setMessage] = useState('CSV：code,name,r,g,b；JSON：[{ code, name, hex }]')
+  const [sourcePaletteId, setSourcePaletteId] = useState<BuiltInPaletteId>('mard')
+  const sourcePalette = BUILT_IN_PALETTES.find((palette) => palette.id === sourcePaletteId) ?? BUILT_IN_PALETTES[0]
+  const [sourceCode, setSourceCode] = useState(sourcePalette.colors[0].code)
+  const sourceColor = sourcePalette.colors.find((color) => color.code === sourceCode) ?? sourcePalette.colors[0]
+  const alternatives = findClosestColors(sourceColor, selectedPalette.colors.filter((color) => !disabledCodes.has(color.code)), 3)
 
   const importFile = async (file?: File) => {
     if (!file) return
@@ -88,6 +94,12 @@ export function PaletteManager({
                 return <button key={color.code} type="button" className={disabled ? 'is-disabled' : ''} onClick={() => onToggleColor(color.code)} title={`${color.code}${color.name ? ` · ${color.name}` : ''}`} aria-pressed={!disabled}><i style={{ background: color.hex }} /><b>{color.code}</b></button>
               })}
             </div>
+            <section className="palette-match-tool">
+              <div><strong>跨品牌近似色查询</strong><span>从一个内置品牌选色，在当前色卡中寻找最接近的可用颜色。</span></div>
+              <label>来源品牌<select value={sourcePaletteId} onChange={(event) => { const id = event.target.value as BuiltInPaletteId; const palette = BUILT_IN_PALETTES.find((item) => item.id === id) ?? BUILT_IN_PALETTES[0]; setSourcePaletteId(id); setSourceCode(palette.colors[0].code) }}>{BUILT_IN_PALETTES.map((palette) => <option key={palette.id} value={palette.id}>{palette.name}</option>)}</select></label>
+              <label>来源色号<select value={sourceCode} onChange={(event) => setSourceCode(event.target.value)}>{sourcePalette.colors.map((color) => <option key={color.code} value={color.code}>{color.code}{color.name ? ` · ${color.name}` : ''}</option>)}</select></label>
+              <div className="palette-match-results">{alternatives.map((match) => <span key={match.color.code}><i style={{ background: match.color.hex }} /><b>{match.color.code}</b><small>Δ {match.distance.toFixed(1)}</small></span>)}</div>
+            </section>
             <section className="custom-palette-import">
               <div><strong>导入自定义色卡</strong><span>适合 COCO、漫漫、盼盼或你自己的库存色号。</span></div>
               <label><span>色卡名称</span><input value={customName} onChange={(event) => setCustomName(event.target.value)} placeholder="例如：COCO 官方色卡" /></label>

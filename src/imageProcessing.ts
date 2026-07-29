@@ -1,5 +1,6 @@
 import { MARD_PALETTE, rgbToLab, type BeadColor, type Lab, type RGB } from './palette.ts'
 import { calculateImagePlacement, type ImageTransform } from './imageComposition.ts'
+import { applyConversionMode, type ConversionMode } from './conversionModes.ts'
 
 export interface ProcessOptions {
   width: number
@@ -13,6 +14,7 @@ export interface ProcessOptions {
   dither: boolean
   fit: 'contain' | 'cover'
   transform: ImageTransform
+  mode: ConversionMode
 }
 
 export interface PatternCell {
@@ -65,7 +67,7 @@ function adjustRgb(rgb: RGB, options: ProcessOptions): RGB {
   r = luminance + (r - luminance) * saturation
   g = luminance + (g - luminance) * saturation
   b = luminance + (b - luminance) * saturation
-  return [clamp(Math.round(r)), clamp(Math.round(g)), clamp(Math.round(b))]
+  return applyConversionMode([clamp(Math.round(r)), clamp(Math.round(g)), clamp(Math.round(b))], options.mode)
 }
 
 function nearestColor(lab: Lab, palette: BeadColor[]) {
@@ -188,7 +190,7 @@ function sampleImage(image: HTMLImageElement, options: ProcessOptions) {
   canvas.width = options.width
   canvas.height = options.height
   const context = canvas.getContext('2d', { willReadFrequently: true })!
-  context.imageSmoothingEnabled = true
+  context.imageSmoothingEnabled = options.mode !== 'pixel'
   context.imageSmoothingQuality = 'high'
 
   const placement = calculateImagePlacement(

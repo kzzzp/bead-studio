@@ -1,11 +1,12 @@
-export type PaperSize = 'a4' | 'a3'
-export type PrintOrientation = 'portrait' | 'landscape'
+export type PaperSize = 'a4' | 'a3' | 'custom'
+export type PrintOrientation = 'auto' | 'portrait' | 'landscape'
 
 export interface PrintLayoutOptions {
   paper: PaperSize
   orientation: PrintOrientation
-  beadSizeMm: 2.6 | 5
+  beadSizeMm: number
   overlapCells: number
+  customPaperMm?: { width: number; height: number }
 }
 
 export interface PrintPage {
@@ -24,7 +25,7 @@ export interface PrintPage {
   overlapsBottom: boolean
 }
 
-const PAPER_MM: Record<PaperSize, { width: number; height: number }> = {
+const PAPER_MM: Record<Exclude<PaperSize, 'custom'>, { width: number; height: number }> = {
   a4: { width: 210, height: 297 },
   a3: { width: 297, height: 420 },
 }
@@ -33,8 +34,16 @@ export const PRINT_MARGIN_MM = 12
 export const PRINT_HEADER_MM = 20
 
 export function createPrintLayout(patternWidth: number, patternHeight: number, options: PrintLayoutOptions) {
-  const basePaper = PAPER_MM[options.paper]
-  const paperSizeMm = options.orientation === 'portrait'
+  if (!Number.isFinite(options.beadSizeMm) || options.beadSizeMm <= 0) throw new Error('格距必须大于 0 mm')
+  const requestedPaper = options.paper === 'custom'
+    ? options.customPaperMm ?? { width: 210, height: 297 }
+    : PAPER_MM[options.paper]
+  const basePaper = { width: Math.min(requestedPaper.width, requestedPaper.height), height: Math.max(requestedPaper.width, requestedPaper.height) }
+  if (basePaper.width < 100 || basePaper.height < 100) throw new Error('自定义纸张尺寸过小')
+  const resolvedOrientation = options.orientation === 'auto'
+    ? (patternWidth >= patternHeight ? 'landscape' : 'portrait')
+    : options.orientation
+  const paperSizeMm = resolvedOrientation === 'portrait'
     ? basePaper
     : { width: basePaper.height, height: basePaper.width }
   const cellsPerPage = {
@@ -83,5 +92,6 @@ export function createPrintLayout(patternWidth: number, patternHeight: number, o
     marginMm: PRINT_MARGIN_MM,
     headerMm: PRINT_HEADER_MM,
     beadSizeMm: options.beadSizeMm,
+    resolvedOrientation,
   }
 }

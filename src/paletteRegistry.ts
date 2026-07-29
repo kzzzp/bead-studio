@@ -101,3 +101,17 @@ export function parseCustomPalette(content: string, format: 'json' | 'csv'): Bea
 export function removeDisabledColors(palette: BeadColor[], disabled: ReadonlySet<string>) {
   return palette.filter((color) => !disabled.has(color.code))
 }
+
+export function findClosestColors(source: BeadColor, target: BeadColor[], limit = 3) {
+  return target
+    .map((color) => ({
+      color,
+      distance: Math.sqrt(
+        (source.lab[0] - color.lab[0]) ** 2
+        + (source.lab[1] - color.lab[1]) ** 2
+        + (source.lab[2] - color.lab[2]) ** 2,
+      ),
+    }))
+    .sort((a, b) => a.distance - b.distance || a.color.code.localeCompare(b.color.code))
+    .slice(0, Math.max(0, Math.floor(limit)))
+}

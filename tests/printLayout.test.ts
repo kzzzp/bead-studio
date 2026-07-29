@@ -44,4 +44,23 @@ describe('physical print layout', () => {
     assert.equal(layout.pages[0].widthMm, 145)
     assert.equal(layout.pages[0].heightMm, 145)
   })
+
+  it('chooses orientation automatically and accepts custom paper plus spacing', () => {
+    const layout = createPrintLayout(60, 30, {
+      paper: 'custom',
+      customPaperMm: { width: 180, height: 260 },
+      orientation: 'auto',
+      beadSizeMm: 3,
+      overlapCells: 2,
+    })
+
+    assert.equal(layout.resolvedOrientation, 'landscape')
+    assert.deepEqual(layout.paperSizeMm, { width: 260, height: 180 })
+    assert.equal(layout.pages[0].widthMm, 180)
+  })
+
+  it('rejects impossible spacing and paper dimensions', () => {
+    assert.throws(() => createPrintLayout(10, 10, { paper: 'a4', orientation: 'auto', beadSizeMm: 0, overlapCells: 0 }), /格距/)
+    assert.throws(() => createPrintLayout(10, 10, { paper: 'custom', customPaperMm: { width: 40, height: 40 }, orientation: 'portrait', beadSizeMm: 2.6, overlapCells: 0 }), /纸张/)
+  })
 })

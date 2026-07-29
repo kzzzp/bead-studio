@@ -16,6 +16,7 @@ const options: ProcessOptions = {
   dither: false,
   fit: 'contain',
   transform: DEFAULT_IMAGE_TRANSFORM,
+  mode: 'auto',
 }
 
 describe('processImageData', () => {

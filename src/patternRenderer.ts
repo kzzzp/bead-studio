@@ -16,6 +16,7 @@ export interface DrawOptions {
   legendPosition?: LegendPosition
   coordinateFontScale?: number
   codeFontScale?: number
+  beadStyle?: 'square' | 'circle'
   watermark?: {
     text: string
     opacity?: number
@@ -129,7 +130,29 @@ export function drawPattern(canvas: HTMLCanvasElement, pattern: BeadPattern, opt
       const px = originX + x * options.cellSize
       const py = originY + y * options.cellSize
       context.fillStyle = cell.color?.hex ?? '#fffefa'
-      context.fillRect(px, py, options.cellSize, options.cellSize)
+      if (options.beadStyle === 'circle' && cell.color) {
+        context.fillStyle = '#f7f6f1'
+        context.fillRect(px, py, options.cellSize, options.cellSize)
+        const radius = options.cellSize * .42
+        const centerX = px + options.cellSize / 2
+        const centerY = py + options.cellSize / 2
+        context.save()
+        context.shadowColor = 'rgba(35, 35, 30, .22)'
+        context.shadowBlur = Math.max(1, options.cellSize * .08)
+        context.shadowOffsetY = Math.max(1, options.cellSize * .04)
+        context.fillStyle = cell.color.hex
+        context.beginPath()
+        context.arc(centerX, centerY, radius, 0, Math.PI * 2)
+        context.fill()
+        context.shadowColor = 'transparent'
+        context.fillStyle = 'rgba(255, 255, 255, .2)'
+        context.beginPath()
+        context.arc(centerX - radius * .28, centerY - radius * .32, radius * .22, 0, Math.PI * 2)
+        context.fill()
+        context.restore()
+      } else {
+        context.fillRect(px, py, options.cellSize, options.cellSize)
+      }
       if (options.codes && cell.color && options.cellSize >= 16) {
         if (options.pixelText) {
           const length = cell.color.code.length
@@ -139,7 +162,12 @@ export function drawPattern(canvas: HTMLCanvasElement, pattern: BeadPattern, opt
           context.fillStyle = contrastColor(cell.color.hex)
           const codeFontSize = Math.max(11, options.cellSize * (options.codeFontScale ?? 0.46))
           context.font = `900 ${codeFontSize}px ui-monospace, SFMono-Regular, Consolas, monospace`
-          context.fillText(cell.color.code, px + options.cellSize / 2, py + options.cellSize / 2 + 0.5)
+          context.fillText(
+            cell.color.code,
+            px + options.cellSize / 2,
+            py + options.cellSize / 2 + 0.5,
+            Math.max(4, options.cellSize - 5),
+          )
         }
       }
     }

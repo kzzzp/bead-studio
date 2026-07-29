@@ -1,11 +1,22 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { getBuiltInPalette, parseCustomPalette, removeDisabledColors } from '../src/paletteRegistry.ts'
+import { findClosestColors, getBuiltInPalette, parseCustomPalette, removeDisabledColors } from '../src/paletteRegistry.ts'
 
 describe('built-in palettes', () => {
   it('ships the licensed Perler and Hama reference palettes', () => {
     assert.equal(getBuiltInPalette('perler').colors.length, 103)
     assert.equal(getBuiltInPalette('hama').colors.length, 92)
+  })
+})
+
+describe('cross-brand alternatives', () => {
+  it('returns nearest target colors in perceptual order', () => {
+    const source = getBuiltInPalette('mard').colors[0]
+    const matches = findClosestColors(source, getBuiltInPalette('perler').colors, 3)
+
+    assert.equal(matches.length, 3)
+    assert.ok(matches[0].distance <= matches[1].distance)
+    assert.ok(matches[1].distance <= matches[2].distance)
   })
 })
 
