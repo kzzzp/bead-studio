@@ -6,13 +6,14 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "tsc -b && vite build",
-    "test": "node --test tests/exportSizing.test.ts tests/imageProcessing.test.ts tests/personMask.test.ts tests/cartoonCutout.test.ts tests/patternRenderer.test.ts tests/maskEditor.test.ts",
+    "generate:palettes": "node scripts/generate-palettes.mjs",
+    "test": "node --test tests/*.test.ts",
     "preview": "vite preview --host 0.0.0.0"
   },
   "dependencies": {
     "@mediapipe/tasks-vision": "0.10.35",
     "@vitejs/plugin-react": "latest",
-    "jszip": "latest",
+    "jspdf": "^4.2.1",
     "lucide-react": "latest",
     "react": "latest",
     "react-dom": "latest",

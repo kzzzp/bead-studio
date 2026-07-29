@@ -1,10 +1,14 @@
 import {
   Check,
+  CirclePlay,
   ChevronDown,
   CircleHelp,
+  Crop,
   Download,
   FileDown,
   FileCode2,
+  FlipHorizontal2,
+  FolderOpen,
   Grid3X3,
   Image as ImageIcon,
   Layers3,
@@ -12,8 +16,10 @@ import {
   Lock,
   Minus,
   Palette,
+  Pencil,
   Plus,
   RotateCcw,
+  Save,
   ShieldCheck,
   Sparkles,
   Stamp,
@@ -21,11 +27,23 @@ import {
   WandSparkles,
   X,
 } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
-import JSZip from 'jszip'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { CompositionEditor } from './CompositionEditor'
+import { CONVERSION_MODES } from './conversionModes'
 import { CutoutEditor } from './CutoutEditor'
+import { PaletteManager, type CustomPaletteDefinition } from './PaletteManager'
+import { PatternEditor } from './PatternEditor'
+import { ProjectManager } from './ProjectManager'
+import { ProgressTracker } from './ProgressTracker'
 import { createFullExportPlan } from './exportSizing'
+import { DEFAULT_IMAGE_TRANSFORM } from './imageComposition'
 import { processImage, type BeadPattern, type ProcessOptions } from './imageProcessing'
+import { getBuiltInPalette, parseCustomPalette, removeDisabledColors, type BuiltInPaletteId } from './paletteRegistry'
+import { mirrorPattern } from './patternEditing'
+import type { PaperSize, PrintOrientation } from './printLayout'
+import { duplicateProjectSnapshot, validateProjectSnapshot, type ProjectSnapshot } from './projectFormat'
+import { deleteProjectSnapshot, listProjectSnapshots, saveProjectSnapshot } from './projectStore'
+import { createProgressStorageKey } from './progressTracking'
 import { cutOutPerson } from './personCutout'
 import { canvasToPngBlob, createPatternSvg, downloadBlob, downloadCanvas, downloadText, drawPattern } from './patternRenderer'
 
@@ -35,7 +53,45 @@ type SourceImage = {
   name: string
 }
 
-type PreviewMode = 'pattern' | 'pixel' | 'original'
+type PreviewMode = 'pattern' | 'pixel' | 'beads' | 'mirror' | 'board' | 'poster' | 'original'
+
+type PatternHistoryState = {
+  source: BeadPattern | null
+  items: BeadPattern[]
+  index: number
+}
+
+type PaletteSelectionId = BuiltInPaletteId | 'custom'
+
+function loadCustomPalette(): CustomPaletteDefinition | null {
+  try {
+    const saved = JSON.parse(window.localStorage.getItem('bead-studio-custom-palette') ?? 'null') as { name?: unknown; colors?: unknown }
+    if (!saved || typeof saved.name !== 'string' || !Array.isArray(saved.colors)) return null
+    return { name: saved.name, colors: parseCustomPalette(JSON.stringify(saved.colors), 'json') }
+  } catch {
+    return null
+  }
+}
+
+function loadDisabledPaletteColors() {
+  try {
+    const saved = JSON.parse(window.localStorage.getItem('bead-studio-disabled-palette-colors') ?? '{}') as Record<string, unknown>
+    return Object.fromEntries(Object.entries(saved).map(([id, codes]) => [id, Array.isArray(codes) ? codes.filter((code): code is string => typeof code === 'string') : []]))
+  } catch {
+    return {} as Record<string, string[]>
+  }
+}
+
+async function imageUrlToDataUrl(url: string) {
+  if (url.startsWith('data:image/')) return url
+  const blob = await fetch(url).then((response) => response.blob())
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => typeof reader.result === 'string' ? resolve(reader.result) : reject(new Error('图片编码失败'))
+    reader.onerror = () => reject(reader.error ?? new Error('图片编码失败'))
+    reader.readAsDataURL(blob)
+  })
+}
 
 const DEFAULT_OPTIONS: ProcessOptions = {
   width: 40,
@@ -48,6 +104,8 @@ const DEFAULT_OPTIONS: ProcessOptions = {
   backgroundTolerance: 22,
   dither: false,
   fit: 'contain',
+  transform: DEFAULT_IMAGE_TRANSFORM,
+  mode: 'auto',
 }
 
 const DEFAULT_WATERMARK_TEXT = '@小Z拼豆图纸定制'
@@ -94,7 +152,7 @@ function RangeControl({
   suffix?: string
   onChange: (value: number) => void
 }) {
-  const progress = ((value - min) / (max - min)) * 100
+  const progress = ((value - min) / Math.max(1, max - min)) * 100
   return (
     <label className="range-control">
       <span className="control-label"><span>{label}</span><b>{value}{suffix}</b></span>
@@ -125,17 +183,22 @@ function PatternPreview({
   zoom: number
 }) {
   const ref = useRef<HTMLCanvasElement>(null)
+  const displayPattern = useMemo(() => mode === 'mirror' ? mirrorPattern(pattern) : pattern, [mode, pattern])
   useEffect(() => {
     if (!ref.current || mode === 'original') return
-    drawPattern(ref.current, pattern, {
+    drawPattern(ref.current, displayPattern, {
       cellSize: Math.max(12, Math.round(zoom / 4)),
-      coordinates: mode === 'pattern',
-      codes: mode === 'pattern' && showCodes,
-      grid: mode === 'pattern',
-      boardLines: mode === 'pattern' && boardLines,
+      coordinates: mode === 'pattern' || mode === 'mirror' || mode === 'board',
+      codes: (mode === 'pattern' || mode === 'mirror' || mode === 'board') && showCodes,
+      grid: mode === 'pattern' || mode === 'mirror' || mode === 'board',
+      boardLines: mode === 'board' || ((mode === 'pattern' || mode === 'mirror') && boardLines),
+      beadStyle: mode === 'beads' ? 'circle' : 'square',
+      title: mode === 'poster' ? '我的拼豆作品' : undefined,
+      legend: mode === 'poster',
+      legendPosition: 'bottom',
       pixelRatio: Math.max(2, Math.min(window.devicePixelRatio || 1, 2.5)),
     })
-  }, [pattern, mode, showCodes, boardLines, zoom])
+  }, [displayPattern, mode, showCodes, boardLines, zoom])
   return <canvas ref={ref} className="pattern-canvas" aria-label="拼豆图纸预览" />
 }
 
@@ -166,19 +229,6 @@ function downloadCsv(pattern: BeadPattern) {
   setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
-function cropPattern(pattern: BeadPattern, startX: number, startY: number, width: number, height: number): BeadPattern {
-  const cells = []
-  let totalBeads = 0
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      const cell = pattern.cells[(startY + y) * pattern.width + startX + x]
-      cells.push(cell)
-      if (cell.color) totalBeads += 1
-    }
-  }
-  return { width, height, cells, usage: [], totalBeads }
-}
-
 function App() {
   const [source, setSource] = useState<SourceImage | null>(null)
   const [cutout, setCutout] = useState<SourceImage | null>(null)
@@ -193,6 +243,26 @@ function App() {
   const [isExporting, setIsExporting] = useState(false)
   const [isCuttingOut, setIsCuttingOut] = useState(false)
   const [isEditingCutout, setIsEditingCutout] = useState(false)
+  const [isEditingComposition, setIsEditingComposition] = useState(false)
+  const [isEditingPattern, setIsEditingPattern] = useState(false)
+  const [isManagingPalette, setIsManagingPalette] = useState(false)
+  const [isManagingProjects, setIsManagingProjects] = useState(false)
+  const [isTrackingProgress, setIsTrackingProgress] = useState(false)
+  const [projectSnapshots, setProjectSnapshots] = useState<ProjectSnapshot[]>([])
+  const [projectName, setProjectName] = useState('未命名拼豆工程')
+  const [isSavingProject, setIsSavingProject] = useState(false)
+  const [autoSaveCandidate, setAutoSaveCandidate] = useState<ProjectSnapshot | null>(null)
+  const [pdfPaper, setPdfPaper] = useState<PaperSize>('a4')
+  const [pdfOrientation, setPdfOrientation] = useState<PrintOrientation>('auto')
+  const [pdfBeadSize, setPdfBeadSize] = useState(2.6)
+  const [pdfScaleMode, setPdfScaleMode] = useState<'actual' | 'fit'>('actual')
+  const [pdfCustomPaper, setPdfCustomPaper] = useState({ width: 210, height: 297 })
+  const [customPalette, setCustomPalette] = useState<CustomPaletteDefinition | null>(loadCustomPalette)
+  const [paletteId, setPaletteId] = useState<PaletteSelectionId>(() => {
+    const saved = window.localStorage.getItem('bead-studio-palette-id') as PaletteSelectionId | null
+    return saved === 'perler' || saved === 'hama' || saved === 'custom' ? saved : 'mard'
+  })
+  const [disabledPaletteColors, setDisabledPaletteColors] = useState<Record<string, string[]>>(loadDisabledPaletteColors)
   const [cutoutInfo, setCutoutInfo] = useState('')
   const [watermarkEnabled, setWatermarkEnabled] = useState(() => window.localStorage.getItem('bead-studio-watermark-enabled') === 'true')
   const [watermarkText, setWatermarkText] = useState(() => window.localStorage.getItem('bead-studio-watermark-text') || DEFAULT_WATERMARK_TEXT)
@@ -202,7 +272,15 @@ function App() {
   })
   const fileRef = useRef<HTMLInputElement>(null)
   const cutoutRequestRef = useRef(0)
+  const autoSaveRequestRef = useRef(0)
+  const pendingRestoredPatternRef = useRef<BeadPattern | null>(null)
   const patternSource = cutout ?? source
+  const selectedPalette = paletteId === 'custom' && customPalette ? customPalette : getBuiltInPalette(paletteId === 'custom' ? 'mard' : paletteId)
+  const selectedDisabledCodes = useMemo(() => new Set(disabledPaletteColors[paletteId] ?? []), [disabledPaletteColors, paletteId])
+  const activePalette = useMemo(() => {
+    const colors = removeDisabledColors(selectedPalette.colors, selectedDisabledCodes)
+    return colors.length ? colors : selectedPalette.colors.slice(0, 1)
+  }, [selectedDisabledCodes, selectedPalette])
   const watermark = watermarkEnabled && watermarkText.trim()
     ? { text: watermarkText.trim(), opacity: watermarkOpacity / 100 }
     : undefined
@@ -219,13 +297,96 @@ function App() {
     window.localStorage.setItem('bead-studio-watermark-opacity', String(watermarkOpacity))
   }, [watermarkOpacity])
 
-  const pattern = useMemo(() => {
+  useEffect(() => {
+    window.localStorage.setItem('bead-studio-palette-id', paletteId)
+  }, [paletteId])
+
+  useEffect(() => {
+    window.localStorage.setItem('bead-studio-disabled-palette-colors', JSON.stringify(disabledPaletteColors))
+  }, [disabledPaletteColors])
+
+  useEffect(() => {
+    if (customPalette) window.localStorage.setItem('bead-studio-custom-palette', JSON.stringify(customPalette))
+  }, [customPalette])
+
+  useEffect(() => {
+    setOptions((current) => current.maxColors <= activePalette.length
+      ? current
+      : { ...current, maxColors: activePalette.length })
+  }, [activePalette.length])
+
+  const generatedPattern = useMemo(() => {
     if (!patternSource) return null
-    return processImage(patternSource.image, options)
-  }, [patternSource, options])
+    return processImage(patternSource.image, options, activePalette)
+  }, [activePalette, patternSource, options])
+  const [patternHistory, setPatternHistory] = useState<PatternHistoryState>({ source: null, items: [], index: -1 })
+  const pattern = generatedPattern && patternHistory.source === generatedPattern
+    ? patternHistory.items[patternHistory.index] ?? generatedPattern
+    : generatedPattern
+
+  useEffect(() => {
+    const restored = pendingRestoredPatternRef.current
+    if (generatedPattern && restored && restored.width === generatedPattern.width && restored.height === generatedPattern.height) {
+      pendingRestoredPatternRef.current = null
+      setPatternHistory({ source: generatedPattern, items: [generatedPattern, restored], index: 1 })
+    } else {
+      setPatternHistory(generatedPattern
+        ? { source: generatedPattern, items: [generatedPattern], index: 0 }
+        : { source: null, items: [], index: -1 })
+    }
+    setIsEditingPattern(false)
+  }, [generatedPattern])
+
+  const commitPatternEdit = useCallback((next: BeadPattern) => {
+    if (!generatedPattern) return
+    setPatternHistory((current) => {
+      const state = current.source === generatedPattern
+        ? current
+        : { source: generatedPattern, items: [generatedPattern], index: 0 }
+      if (state.items[state.index] === next) return state
+      const items = [...state.items.slice(0, state.index + 1), next].slice(-51)
+      return { source: generatedPattern, items, index: items.length - 1 }
+    })
+  }, [generatedPattern])
+
+  const undoPatternEdit = useCallback(() => {
+    setPatternHistory((current) => current.index > 0 ? { ...current, index: current.index - 1 } : current)
+  }, [])
+
+  const redoPatternEdit = useCallback(() => {
+    setPatternHistory((current) => current.index < current.items.length - 1 ? { ...current, index: current.index + 1 } : current)
+  }, [])
+
+  const resetPatternEdits = useCallback(() => {
+    if (!generatedPattern) return
+    setPatternHistory({ source: generatedPattern, items: [generatedPattern], index: 0 })
+  }, [generatedPattern])
 
   const updateOption = <K extends keyof ProcessOptions>(key: K, value: ProcessOptions[K]) => {
     setOptions((current) => ({ ...current, [key]: value }))
+  }
+
+  const selectPalette = (id: PaletteSelectionId) => {
+    if (id === 'custom' && !customPalette) return
+    setPaletteId(id)
+  }
+
+  const importCustomPalette = (palette: CustomPaletteDefinition) => {
+    setCustomPalette(palette)
+    setDisabledPaletteColors((current) => ({ ...current, custom: [] }))
+    setPaletteId('custom')
+  }
+
+  const togglePaletteColor = (code: string) => {
+    setDisabledPaletteColors((current) => {
+      const disabled = new Set(current[paletteId] ?? [])
+      if (disabled.has(code)) disabled.delete(code)
+      else {
+        if (selectedPalette.colors.length - disabled.size <= 1) return current
+        disabled.add(code)
+      }
+      return { ...current, [paletteId]: [...disabled] }
+    })
   }
 
   const setDimension = (dimension: 'width' | 'height', raw: number) => {
@@ -239,7 +400,19 @@ function App() {
     })
   }
 
-  const loadUrl = (url: string, name: string) => {
+  const setAspectRatio = (ratio: [number, number] | null) => {
+    if (!ratio) {
+      setLockedRatio(false)
+      return
+    }
+    setLockedRatio(true)
+    setOptions((current) => ({
+      ...current,
+      height: Math.max(8, Math.min(120, Math.round(current.width * ratio[1] / ratio[0]))),
+    }))
+  }
+
+  const loadUrl = (url: string, name: string, restoredProject?: ProjectSnapshot) => {
     const image = new Image()
     image.onload = () => {
       cutoutRequestRef.current += 1
@@ -249,15 +422,19 @@ function App() {
       })
       setIsCuttingOut(false)
       setIsEditingCutout(false)
+      setIsEditingComposition(false)
       setCutoutInfo('')
+      pendingRestoredPatternRef.current = restoredProject?.pattern ?? null
+      setProjectName(restoredProject?.name.replace(/^(自动保存 · )+/, '') ?? name.replace(/\.[^.]+$/, ''))
       setSource((old) => {
         if (old?.url.startsWith('blob:')) URL.revokeObjectURL(old.url)
         return { image, url, name }
       })
-      setOptions((current) => ({
-        ...current,
-        height: Math.max(8, Math.min(120, Math.round(current.width / (image.naturalWidth / image.naturalHeight)))),
-      }))
+      setOptions((current) => restoredProject?.options ?? ({
+          ...current,
+          height: Math.max(8, Math.min(120, Math.round(current.width / (image.naturalWidth / image.naturalHeight)))),
+          transform: DEFAULT_IMAGE_TRANSFORM,
+        }))
     }
     image.onerror = () => {
       if (url.startsWith('blob:')) URL.revokeObjectURL(url)
@@ -283,6 +460,118 @@ function App() {
     const dataUrl = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(SAMPLE_SVG)}`
     loadUrl(dataUrl, '橘猫示例.svg')
   }
+
+  const refreshProjectSnapshots = async () => {
+    setProjectSnapshots(await listProjectSnapshots())
+  }
+
+  const openProjectManager = async () => {
+    try {
+      await refreshProjectSnapshots()
+      setIsManagingProjects(true)
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : '本地工程读取失败')
+    }
+  }
+
+  const createCurrentSnapshot = async (): Promise<ProjectSnapshot> => {
+    if (!patternSource || !pattern) throw new Error('请先生成图纸')
+    return {
+      version: 1,
+      id: crypto.randomUUID(),
+      name: projectName.trim() || '未命名拼豆工程',
+      savedAt: new Date().toISOString(),
+      sourceName: patternSource.name,
+      sourceDataUrl: await imageUrlToDataUrl(patternSource.url),
+      options,
+      paletteId,
+      disabledPaletteColors: [...selectedDisabledCodes],
+      customPalette,
+      pattern,
+      completedProgress: (() => {
+        try {
+          const saved = JSON.parse(window.localStorage.getItem(createProgressStorageKey(pattern)) ?? '[]') as unknown
+          return Array.isArray(saved) ? saved.filter((index): index is number => Number.isInteger(index)) : []
+        } catch {
+          return []
+        }
+      })(),
+    }
+  }
+
+  const saveCurrentProject = async () => {
+    if (isSavingProject) return
+    setIsSavingProject(true)
+    try {
+      const snapshot = await createCurrentSnapshot()
+      await saveProjectSnapshot(snapshot)
+      setExportInfo(`工程已保存 · ${snapshot.name} · ${new Date(snapshot.savedAt).toLocaleTimeString('zh-CN')}`)
+      if (isManagingProjects) await refreshProjectSnapshots()
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : '工程保存失败')
+    } finally {
+      setIsSavingProject(false)
+    }
+  }
+
+  const loadProjectSnapshot = (snapshot: ProjectSnapshot) => {
+    if (snapshot.paletteId === 'custom' && snapshot.customPalette) setCustomPalette(snapshot.customPalette)
+    setPaletteId(snapshot.paletteId === 'custom' && !snapshot.customPalette ? 'mard' : snapshot.paletteId)
+    setDisabledPaletteColors((current) => ({ ...current, [snapshot.paletteId]: snapshot.disabledPaletteColors }))
+    window.localStorage.setItem(createProgressStorageKey(snapshot.pattern), JSON.stringify(snapshot.completedProgress ?? []))
+    loadUrl(snapshot.sourceDataUrl, snapshot.sourceName, snapshot)
+    setIsManagingProjects(false)
+    setExportInfo(`已打开工程 · ${snapshot.name}`)
+  }
+
+  const duplicateProject = async (snapshot: ProjectSnapshot) => {
+    const copy = duplicateProjectSnapshot(snapshot, crypto.randomUUID(), new Date().toISOString())
+    await saveProjectSnapshot(copy)
+    await refreshProjectSnapshots()
+  }
+
+  const exportProjectFile = (snapshot: ProjectSnapshot) => {
+    downloadText(JSON.stringify(snapshot), 'application/json;charset=utf-8', `${snapshot.name}.bead-project`)
+  }
+
+  const importProjectFile = async (file: File) => {
+    try {
+      const snapshot = validateProjectSnapshot(JSON.parse(await file.text()))
+      await saveProjectSnapshot(snapshot)
+      await refreshProjectSnapshots()
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : '工程文件导入失败')
+    }
+  }
+
+  const removeProject = async (snapshot: ProjectSnapshot) => {
+    if (!window.confirm(`确定删除“${snapshot.name}”这个本地快照吗？`)) return
+    await deleteProjectSnapshot(snapshot.id)
+    await refreshProjectSnapshots()
+  }
+
+  useEffect(() => {
+    void listProjectSnapshots().then((projects) => {
+      const autoSave = projects.find((project) => project.id === 'bead-studio-auto-save')
+      if (autoSave) setAutoSaveCandidate(autoSave)
+    }).catch(() => undefined)
+  }, [])
+
+  useEffect(() => {
+    const request = ++autoSaveRequestRef.current
+    if (!pattern || !patternSource) return
+    const timer = window.setTimeout(() => {
+      void createCurrentSnapshot().then((snapshot) => {
+        if (request !== autoSaveRequestRef.current) return undefined
+        return saveProjectSnapshot({
+          ...snapshot,
+          id: 'bead-studio-auto-save',
+          name: `自动保存 · ${snapshot.name.replace(/^(自动保存 · )+/, '')}`,
+        })
+      }).catch(() => undefined)
+    }, 1500)
+    return () => window.clearTimeout(timer)
+  }, [customPalette, disabledPaletteColors, isTrackingProgress, options, paletteId, pattern, patternSource, projectName])
 
   const clearSource = () => {
     cutoutRequestRef.current += 1
@@ -365,13 +654,14 @@ function App() {
     }
   }
 
-  const exportFullPattern = async () => {
+  const exportFullPattern = async (mirrored: boolean) => {
     if (!pattern || isExporting) return
     setIsExporting(true)
     try {
-      const plan = createFullExportPlan(pattern.width, pattern.height, pattern.usage.length)
+      const exportPattern = mirrored ? mirrorPattern(pattern) : pattern
+      const plan = createFullExportPlan(exportPattern.width, exportPattern.height, exportPattern.usage.length)
       const canvas = document.createElement('canvas')
-      drawPattern(canvas, pattern, {
+      drawPattern(canvas, exportPattern, {
         cellSize: plan.cellSize,
         coordinates: true,
         codes: true,
@@ -386,8 +676,8 @@ function App() {
         watermark,
       })
       const blob = await canvasToPngBlob(canvas)
-      downloadBlob(blob, `拼豆完整高清图纸-${pattern.width}x${pattern.height}.png`)
-      setExportInfo(`已生成单张完整 PNG · ${canvas.width} × ${canvas.height}px · 每格 ${plan.cellSize}px`)
+      downloadBlob(blob, `${mirrored ? '拼豆镜像成品图纸' : '拼豆完整高清图纸'}-${pattern.width}x${pattern.height}.png`)
+      setExportInfo(`已生成${mirrored ? '镜像' : '普通'}单张 PNG · ${canvas.width} × ${canvas.height}px · 每格 ${plan.cellSize}px`)
     } catch (error) {
       console.error(error)
       window.alert('完整 PNG 生成失败，当前设备内存可能不足；请改用 SVG 无损图。')
@@ -396,60 +686,54 @@ function App() {
     }
   }
 
-  const exportPagedPattern = async () => {
+  const exportCurrentStyle = async () => {
+    if (!pattern || previewMode === 'original' || isExporting) return
+    setIsExporting(true)
+    try {
+      const displayPattern = previewMode === 'mirror' ? mirrorPattern(pattern) : pattern
+      const plan = createFullExportPlan(displayPattern.width, displayPattern.height, displayPattern.usage.length)
+      const canvas = document.createElement('canvas')
+      drawPattern(canvas, displayPattern, {
+        cellSize: plan.cellSize,
+        coordinates: previewMode === 'pattern' || previewMode === 'mirror' || previewMode === 'board',
+        codes: (previewMode === 'pattern' || previewMode === 'mirror' || previewMode === 'board') && showCodes,
+        grid: previewMode === 'pattern' || previewMode === 'mirror' || previewMode === 'board',
+        boardLines: previewMode === 'board' || ((previewMode === 'pattern' || previewMode === 'mirror') && boardLines),
+        beadStyle: previewMode === 'beads' ? 'circle' : 'square',
+        title: previewMode === 'poster' ? projectName : undefined,
+        legend: previewMode === 'poster',
+        legendPosition: plan.legendPosition,
+        pixelRatio: 1,
+        watermark,
+      })
+      downloadBlob(await canvasToPngBlob(canvas), `拼豆-${previewMode}-${pattern.width}x${pattern.height}.png`)
+      setExportInfo(`已按当前“${previewMode}”展示样式导出 PNG`)
+    } finally {
+      setIsExporting(false)
+    }
+  }
+
+  const exportPhysicalPdf = async (mirrored: boolean) => {
     if (!pattern || isExporting) return
     setIsExporting(true)
     try {
-      const pageSize = 29
-      const pagesX = Math.ceil(pattern.width / pageSize)
-      const pagesY = Math.ceil(pattern.height / pageSize)
-      const pageCount = pagesX * pagesY
-      const zip = new JSZip()
-      let firstPageSize = ''
-
-      for (let pageY = 0; pageY < pagesY; pageY += 1) {
-        for (let pageX = 0; pageX < pagesX; pageX += 1) {
-          const startX = pageX * pageSize
-          const startY = pageY * pageSize
-          const width = Math.min(pageSize, pattern.width - startX)
-          const height = Math.min(pageSize, pattern.height - startY)
-          const pagePattern = cropPattern(pattern, startX, startY, width, height)
-          const canvas = document.createElement('canvas')
-          drawPattern(canvas, pagePattern, {
-            cellSize: 64,
-            coordinates: true,
-            codes: true,
-            grid: true,
-            boardLines: false,
-            legend: false,
-            pixelRatio: 2,
-            coordinateOffsetX: startX,
-            coordinateOffsetY: startY,
-            pixelText: true,
-            watermark,
-          })
-          const blob = await canvasToPngBlob(canvas)
-          firstPageSize ||= `${canvas.width} × ${canvas.height}px`
-          const filename = `图纸-第${pageY + 1}行-第${pageX + 1}列.png`
-          if (pageCount === 1) {
-            downloadBlob(blob, filename)
-          } else {
-            zip.file(filename, blob)
-          }
-        }
-      }
-
-      if (pageCount > 1) {
-        zip.file('用豆清单.csv', createCsvContent(pattern))
-        const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' })
-        downloadBlob(blob, `拼豆清晰分页图-${pagesX}x${pagesY}页.zip`)
-      }
-      setExportInfo(pageCount === 1
-        ? `已生成 1 张清晰图纸 · ${firstPageSize}`
-        : `已生成 ${pageCount} 张清晰图纸并打包 · 每页最大 29 × 29 格`)
+      const exportPattern = mirrored ? mirrorPattern(pattern) : pattern
+      const { createPhysicalPdfBlob } = await import('./pdfExport')
+      const { blob, layout } = createPhysicalPdfBlob(exportPattern, {
+        paper: pdfPaper,
+        orientation: pdfOrientation,
+        beadSizeMm: pdfBeadSize,
+        overlapCells: 2,
+        paletteName: selectedPalette.name,
+        mirrored,
+        customPaperMm: pdfPaper === 'custom' ? pdfCustomPaper : undefined,
+        scaleMode: pdfScaleMode,
+      })
+      downloadBlob(blob, `拼豆真实尺寸-${pdfPaper.toUpperCase()}-${pdfBeadSize}mm${mirrored ? '-镜像' : ''}.pdf`)
+      setExportInfo(`已生成 100% 实际尺寸 PDF · ${layout.pages.length} 张图纸页 + 1 张色号表 · ${(blob.size / 1024).toFixed(0)} KB`)
     } catch (error) {
       console.error(error)
-      window.alert('分页图纸生成失败，请减少图纸尺寸后重试。')
+      window.alert('PDF 生成失败，请减少图纸尺寸后重试。')
     } finally {
       setIsExporting(false)
     }
@@ -503,6 +787,13 @@ function App() {
         </div>
       </header>
 
+      {autoSaveCandidate && (
+        <div className="restore-banner" role="status">
+          <span><strong>发现上次自动保存</strong>{autoSaveCandidate.pattern.width} × {autoSaveCandidate.pattern.height} 格 · {new Date(autoSaveCandidate.savedAt).toLocaleString('zh-CN')}</span>
+          <div><button type="button" onClick={() => { loadProjectSnapshot(autoSaveCandidate); setAutoSaveCandidate(null) }}>恢复工程</button><button type="button" onClick={() => setAutoSaveCandidate(null)}>暂不恢复</button></div>
+        </div>
+      )}
+
       <main className="workspace">
         <aside className="control-panel panel">
           <div className="panel-heading">
@@ -545,17 +836,47 @@ function App() {
               <label><span>高</span><input type="number" min="8" max="120" value={options.height} onChange={(event) => setDimension('height', Number(event.target.value))} /><small>格</small></label>
             </div>
             <div className="preset-row">
-              {[29, 40, 58].map((size) => <button key={size} type="button" className={options.width === size ? 'is-active' : ''} onClick={() => setDimension('width', size)}>{size} 格</button>)}
+              {[29, 40, 52, 58, 104].map((size) => <button key={size} type="button" className={options.width === size ? 'is-active' : ''} onClick={() => setDimension('width', size)}>{size} 格</button>)}
+            </div>
+            <div className="ratio-preset-row" aria-label="图纸比例">
+              {([
+                ['1:1', [1, 1]],
+                ['3:4', [3, 4]],
+                ['4:3', [4, 3]],
+                ['9:16', [9, 16]],
+              ] as const).map(([label, ratio]) => (
+                <button key={label} type="button" className={options.width * ratio[1] === options.height * ratio[0] && lockedRatio ? 'is-active' : ''} onClick={() => setAspectRatio([...ratio])}>{label}</button>
+              ))}
+              <button type="button" className={!lockedRatio ? 'is-active' : ''} onClick={() => setAspectRatio(null)}>自由</button>
             </div>
             <div className="segmented wide">
               <button type="button" className={options.fit === 'contain' ? 'is-active' : ''} onClick={() => updateOption('fit', 'contain')}>完整放入</button>
               <button type="button" className={options.fit === 'cover' ? 'is-active' : ''} onClick={() => updateOption('fit', 'cover')}>铺满裁切</button>
             </div>
+            <button type="button" className="composition-launch" disabled={!patternSource} onClick={() => setIsEditingComposition(true)}><Crop size={14} /> 裁剪与构图</button>
           </section>
 
           <section className={`settings-section ${!source ? 'is-muted' : ''}`}>
-            <div className="section-title"><span><Palette size={16} /> 颜色处理</span><em>MARD 221 近似色卡</em></div>
-            <RangeControl label="最多颜色" value={options.maxColors} min={4} max={40} suffix=" 色" onChange={(value) => updateOption('maxColors', value)} />
+            <div className="section-title"><span><WandSparkles size={16} /> 转换模式</span><em>{CONVERSION_MODES.find((mode) => mode.id === options.mode)?.label}</em></div>
+            <div className="conversion-mode-grid">
+              {CONVERSION_MODES.map((mode) => <button key={mode.id} type="button" className={options.mode === mode.id ? 'is-active' : ''} onClick={() => updateOption('mode', mode.id)} title={mode.description}>{mode.label}</button>)}
+            </div>
+            <small className="conversion-hint">{CONVERSION_MODES.find((mode) => mode.id === options.mode)?.description}</small>
+          </section>
+
+          <section className={`settings-section ${!source ? 'is-muted' : ''}`}>
+            <div className="section-title"><span><Palette size={16} /> 颜色处理</span><em>{selectedPalette.name}</em></div>
+            <div className="palette-select-row">
+              <select value={paletteId} onChange={(event) => selectPalette(event.target.value as PaletteSelectionId)} aria-label="选择豆子色卡">
+                <option value="mard">MARD 基础</option>
+                <option value="perler">Perler</option>
+                <option value="hama">Hama Midi</option>
+                {customPalette && <option value="custom">{customPalette.name}</option>}
+              </select>
+              <button type="button" onClick={() => setIsManagingPalette(true)}>管理色卡</button>
+            </div>
+            <small className="palette-availability">当前可用 {activePalette.length} 色 · 可在管理中停用没有库存的颜色</small>
+            <RangeControl label="最多颜色" value={options.maxColors} min={1} max={Math.min(80, activePalette.length)} suffix=" 色" onChange={(value) => updateOption('maxColors', value)} />
             <RangeControl label="饱和度" value={options.saturation} min={60} max={140} suffix="%" onChange={(value) => updateOption('saturation', value)} />
             <div className="dual-range">
               <RangeControl label="亮度" value={options.brightness} min={-30} max={30} onChange={(value) => updateOption('brightness', value)} />
@@ -594,6 +915,11 @@ function App() {
               <button type="button" className={previewMode === 'original' ? 'is-active' : ''} onClick={() => setPreviewMode('original')}><ImageIcon size={14} /> 原图</button>
             </div>
             <div className="preview-actions">
+              <select className="display-style-select" aria-label="展示样式" value={previewMode} onChange={(event) => setPreviewMode(event.target.value as PreviewMode)}>
+                <option value="pattern">色号图</option><option value="pixel">纯色块图</option><option value="beads">圆珠效果图</option><option value="mirror">镜像图</option><option value="board">1:1 垫板图</option><option value="poster">分享海报</option><option value="original">原图</option>
+              </select>
+              <button type="button" className="edit-pattern-button" onClick={() => setIsEditingPattern(true)} disabled={!pattern}><Pencil size={13} /> 精修图纸</button>
+              <button type="button" className="progress-tracker-button" onClick={() => setIsTrackingProgress(true)} disabled={!pattern}><CirclePlay size={13} /> 开始拼豆</button>
               <label className="compact-check"><input type="checkbox" checked={showCodes} onChange={(event) => setShowCodes(event.target.checked)} /><Check size={11} /> 色号</label>
               <label className="compact-check"><input type="checkbox" checked={boardLines} onChange={(event) => setBoardLines(event.target.checked)} /><Check size={11} /> 拼板线</label>
               <span className="toolbar-divider" />
@@ -624,7 +950,7 @@ function App() {
           </div>
           {pattern && (
             <div className="stage-status">
-              <span><i className="status-dot" /> {cutout ? '已抠图 · 可人工修边 · 空白格不计数' : '已按 MARD 色卡完成匹配'}</span>
+              <span><i className="status-dot" /> {cutout ? `已抠图 · ${selectedPalette.name} · 空白格不计数` : `已按 ${selectedPalette.name} 完成匹配`}</span>
               <span>{pattern.width} × {pattern.height} 格</span>
             </div>
           )}
@@ -660,38 +986,66 @@ function App() {
 
               <div className="export-card">
                 <h3>导出你的图纸</h3>
-                <p>默认导出一张完整高清图，不拆分；SVG 可无损放大，分页图仅用于分板打印。</p>
-                <div className="watermark-control">
-                  <Toggle label="导出时加水印" checked={watermarkEnabled} onChange={setWatermarkEnabled} />
-                  {watermarkEnabled && (
-                    <label className="watermark-input">
-                      <span><Stamp size={13} /> 水印文字</span>
-                      <input
-                        type="text"
-                        maxLength={60}
-                        value={watermarkText}
-                        placeholder={DEFAULT_WATERMARK_TEXT}
-                        onChange={(event) => setWatermarkText(event.target.value)}
-                      />
-                      <label className="watermark-strength">
-                        <span>水印强度 <b>{watermarkOpacity}%</b></span>
-                        <input type="range" min="10" max="30" step="1" value={watermarkOpacity} onChange={(event) => setWatermarkOpacity(Number(event.target.value))} />
-                      </label>
-                      <small>大字号斜铺 9 处并覆盖整张图，边缘水印会故意裁切，降低直接截图使用的可能</small>
-                    </label>
-                  )}
+                <p>一张完整高清图，放大仍清晰。常用操作只保留两项。</p>
+                <div className="project-save-row">
+                  <input value={projectName} maxLength={60} onChange={(event) => setProjectName(event.target.value)} aria-label="工程名称" placeholder="工程名称" />
+                  <button type="button" onClick={saveCurrentProject} disabled={isSavingProject}><Save size={14} /> {isSavingProject ? '保存中' : '保存工程'}</button>
+                  <button type="button" onClick={openProjectManager}><FolderOpen size={14} /> 工程管理</button>
                 </div>
-                <button type="button" className="export-primary" onClick={exportFullPattern} disabled={isExporting}><Download size={16} /> {isExporting ? '正在生成图纸…' : '下载完整高清图'}</button>
+                <div className="export-primary-row">
+                  <button type="button" className="export-primary" onClick={() => exportFullPattern(false)} disabled={isExporting}><Download size={16} /> {isExporting ? '正在生成图纸…' : '普通高清图'}</button>
+                  <button type="button" className="export-mirror" onClick={() => exportFullPattern(true)} disabled={isExporting}><FlipHorizontal2 size={16} /> 镜像成品图</button>
+                </div>
                 {exportInfo && <span className="export-status"><Check size={13} /> {exportInfo}</span>}
-                <div className="export-actions">
-                  <button type="button" onClick={exportSvg} disabled={isExporting}><FileCode2 size={14} /> SVG 无损图</button>
-                  <button type="button" onClick={exportPagedPattern} disabled={isExporting}><ImageIcon size={14} /> 分页打印</button>
-                  <button type="button" onClick={() => downloadCsv(pattern)} disabled={isExporting}><FileDown size={14} /> CSV 清单</button>
-                </div>
+                <details className="export-details">
+                  <summary><span>水印设置</span><small>{watermarkEnabled ? '已开启' : '未开启'}</small></summary>
+                  <div className="export-details-body">
+                    <div className="watermark-control">
+                      <Toggle label="导出时加水印" checked={watermarkEnabled} onChange={setWatermarkEnabled} />
+                      {watermarkEnabled && (
+                        <label className="watermark-input">
+                          <span><Stamp size={13} /> 水印文字</span>
+                          <input type="text" maxLength={60} value={watermarkText} placeholder={DEFAULT_WATERMARK_TEXT} onChange={(event) => setWatermarkText(event.target.value)} />
+                          <label className="watermark-strength">
+                            <span>水印强度 <b>{watermarkOpacity}%</b></span>
+                            <input type="range" min="10" max="30" step="1" value={watermarkOpacity} onChange={(event) => setWatermarkOpacity(Number(event.target.value))} />
+                          </label>
+                          <small>水印会斜铺在整张导出图上。</small>
+                        </label>
+                      )}
+                    </div>
+                  </div>
+                </details>
+                <details className="export-details">
+                  <summary><span>更多导出格式</span><small>PNG · SVG · CSV</small></summary>
+                  <div className="export-details-body">
+                    <div className="export-actions">
+                      <button type="button" onClick={exportCurrentStyle} disabled={isExporting || previewMode === 'original'}><Download size={14} /> 当前样式 PNG</button>
+                      <button type="button" onClick={exportSvg} disabled={isExporting}><FileCode2 size={14} /> SVG 无损图</button>
+                      <button type="button" onClick={() => downloadCsv(pattern)} disabled={isExporting}><FileDown size={14} /> CSV 清单</button>
+                    </div>
+                  </div>
+                </details>
+                <details className="export-details">
+                  <summary><span>打印专用 PDF</span><small>需要实际尺寸时使用</small></summary>
+                  <div className="export-details-body">
+                    <div className="pdf-export-box">
+                      <div className="pdf-options">
+                        <label><span>纸张</span><select value={pdfPaper} onChange={(event) => setPdfPaper(event.target.value as PaperSize)}><option value="a4">A4</option><option value="a3">A3</option><option value="custom">自定义</option></select></label>
+                        <label><span>方向</span><select value={pdfOrientation} onChange={(event) => setPdfOrientation(event.target.value as PrintOrientation)}><option value="auto">自动</option><option value="portrait">纵向</option><option value="landscape">横向</option></select></label>
+                        <label><span>比例</span><select value={pdfScaleMode} onChange={(event) => setPdfScaleMode(event.target.value as 'actual' | 'fit')}><option value="actual">100% 原尺寸</option><option value="fit">适合纸张</option></select></label>
+                        <label><span>格距 mm</span><input type="number" min="1" max="12" step="0.1" value={pdfBeadSize} onChange={(event) => setPdfBeadSize(Math.max(1, Number(event.target.value) || 2.6))} /></label>
+                      </div>
+                      {pdfPaper === 'custom' && <div className="custom-paper-row"><label>宽 <input type="number" min="100" value={pdfCustomPaper.width} onChange={(event) => setPdfCustomPaper((value) => ({ ...value, width: Number(event.target.value) }))} /> mm</label><label>高 <input type="number" min="100" value={pdfCustomPaper.height} onChange={(event) => setPdfCustomPaper((value) => ({ ...value, height: Number(event.target.value) }))} /> mm</label></div>}
+                      <small>打印时请选择“实际大小 / 100%”，系统会自动排版并附上色号表。</small>
+                      <div><button type="button" onClick={() => exportPhysicalPdf(false)} disabled={isExporting}><FileDown size={14} /> 普通 PDF</button><button type="button" onClick={() => exportPhysicalPdf(true)} disabled={isExporting}><FlipHorizontal2 size={14} /> 镜像 PDF</button></div>
+                    </div>
+                  </div>
+                </details>
               </div>
             </>
           )}
-          <div className="palette-note"><span className="swatch-stack"><i /><i /><i /></span><p><strong>MARD 基础 221 色（A–H、M）</strong><br />不与 COCO / Perler / Hama 色号通用；屏幕色值为近似值</p><ChevronDown size={14} /></div>
+          <div className="palette-note"><span className="swatch-stack"><i /><i /><i /></span><p><strong>{selectedPalette.name} · {activePalette.length} 色可用</strong><br />当前品牌色号会同步用于图纸、用量统计与导出；屏幕色值为近似值</p><ChevronDown size={14} /></div>
         </aside>
       </main>
       {source && cutout && isEditingCutout && (
@@ -701,6 +1055,58 @@ function App() {
           onApply={applyManualCutout}
           onClose={() => setIsEditingCutout(false)}
         />
+      )}
+      {pattern && generatedPattern && isEditingPattern && (
+        <PatternEditor
+          pattern={pattern}
+          originalPattern={generatedPattern}
+          palette={activePalette}
+          canUndo={patternHistory.index > 0}
+          canRedo={patternHistory.index >= 0 && patternHistory.index < patternHistory.items.length - 1}
+          onCommit={commitPatternEdit}
+          onUndo={undoPatternEdit}
+          onRedo={redoPatternEdit}
+          onReset={resetPatternEdits}
+          onClose={() => setIsEditingPattern(false)}
+        />
+      )}
+      {patternSource && isEditingComposition && (
+        <CompositionEditor
+          image={patternSource.image}
+          width={options.width}
+          height={options.height}
+          fit={options.fit}
+          transform={options.transform}
+          onApply={(transform) => updateOption('transform', transform)}
+          onClose={() => setIsEditingComposition(false)}
+        />
+      )}
+      {isManagingPalette && (
+        <PaletteManager
+          selectedId={paletteId}
+          selectedPalette={selectedPalette}
+          customPalette={customPalette}
+          disabledCodes={selectedDisabledCodes}
+          onSelect={selectPalette}
+          onImport={importCustomPalette}
+          onToggleColor={togglePaletteColor}
+          onEnableAll={() => setDisabledPaletteColors((current) => ({ ...current, [paletteId]: [] }))}
+          onClose={() => setIsManagingPalette(false)}
+        />
+      )}
+      {isManagingProjects && (
+        <ProjectManager
+          projects={projectSnapshots}
+          onLoad={loadProjectSnapshot}
+          onDuplicate={(project) => { void duplicateProject(project) }}
+          onExport={exportProjectFile}
+          onDelete={(project) => { void removeProject(project) }}
+          onImport={(file) => { void importProjectFile(file) }}
+          onClose={() => setIsManagingProjects(false)}
+        />
+      )}
+      {pattern && isTrackingProgress && (
+        <ProgressTracker pattern={pattern} onClose={() => setIsTrackingProgress(false)} />
       )}
     </div>
   )

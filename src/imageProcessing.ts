@@ -1,4 +1,6 @@
 import { MARD_PALETTE, rgbToLab, type BeadColor, type Lab, type RGB } from './palette.ts'
+import { calculateImagePlacement, type ImageTransform } from './imageComposition.ts'
+import { applyConversionMode, type ConversionMode } from './conversionModes.ts'
 
 export interface ProcessOptions {
   width: number
@@ -11,6 +13,8 @@ export interface ProcessOptions {
   backgroundTolerance: number
   dither: boolean
   fit: 'contain' | 'cover'
+  transform: ImageTransform
+  mode: ConversionMode
 }
 
 export interface PatternCell {
@@ -63,7 +67,7 @@ function adjustRgb(rgb: RGB, options: ProcessOptions): RGB {
   r = luminance + (r - luminance) * saturation
   g = luminance + (g - luminance) * saturation
   b = luminance + (b - luminance) * saturation
-  return [clamp(Math.round(r)), clamp(Math.round(g)), clamp(Math.round(b))]
+  return applyConversionMode([clamp(Math.round(r)), clamp(Math.round(g)), clamp(Math.round(b))], options.mode)
 }
 
 function nearestColor(lab: Lab, palette: BeadColor[]) {
@@ -79,9 +83,10 @@ function nearestColor(lab: Lab, palette: BeadColor[]) {
   return best
 }
 
-function choosePalette(labs: Lab[], maxColors: number): BeadColor[] {
+function choosePalette(labs: Lab[], maxColors: number, availableColors: BeadColor[]): BeadColor[] {
   if (!labs.length) return []
-  const target = Math.max(1, Math.min(maxColors, MARD_PALETTE.length))
+  if (!availableColors.length) return []
+  const target = Math.max(1, Math.min(maxColors, availableColors.length))
   const mean: Lab = [0, 0, 0]
   for (const lab of labs) {
     mean[0] += lab[0]
@@ -92,7 +97,7 @@ function choosePalette(labs: Lab[], maxColors: number): BeadColor[] {
   mean[1] /= labs.length
   mean[2] /= labs.length
 
-  const first = nearestColor(mean, MARD_PALETTE)
+  const first = nearestColor(mean, availableColors)
   const chosen = [first]
   const chosenCodes = new Set([first.code])
   const distances = labs.map((lab) => labDistanceSq(lab, first.lab))
@@ -100,7 +105,7 @@ function choosePalette(labs: Lab[], maxColors: number): BeadColor[] {
   while (chosen.length < target) {
     let bestCandidate: BeadColor | null = null
     let bestImprovement = 0
-    for (const candidate of MARD_PALETTE) {
+    for (const candidate of availableColors) {
       if (chosenCodes.has(candidate.code)) continue
       let improvement = 0
       for (let i = 0; i < labs.length; i += 1) {
@@ -185,36 +190,28 @@ function sampleImage(image: HTMLImageElement, options: ProcessOptions) {
   canvas.width = options.width
   canvas.height = options.height
   const context = canvas.getContext('2d', { willReadFrequently: true })!
-  context.imageSmoothingEnabled = true
+  context.imageSmoothingEnabled = options.mode !== 'pixel'
   context.imageSmoothingQuality = 'high'
 
-  const sourceRatio = image.naturalWidth / image.naturalHeight
-  const targetRatio = options.width / options.height
-  let drawWidth = options.width
-  let drawHeight = options.height
-  let offsetX = 0
-  let offsetY = 0
-  if (options.fit === 'contain') {
-    if (sourceRatio > targetRatio) {
-      drawHeight = options.width / sourceRatio
-      offsetY = (options.height - drawHeight) / 2
-    } else {
-      drawWidth = options.height * sourceRatio
-      offsetX = (options.width - drawWidth) / 2
-    }
-  } else if (sourceRatio > targetRatio) {
-    drawWidth = options.height * sourceRatio
-    offsetX = (options.width - drawWidth) / 2
-  } else {
-    drawHeight = options.width / sourceRatio
-    offsetY = (options.height - drawHeight) / 2
-  }
+  const placement = calculateImagePlacement(
+    image.naturalWidth,
+    image.naturalHeight,
+    options.width,
+    options.height,
+    options.fit,
+    options.transform,
+  )
   context.clearRect(0, 0, options.width, options.height)
-  context.drawImage(image, offsetX, offsetY, drawWidth, drawHeight)
+  context.save()
+  context.translate(placement.center.x, placement.center.y)
+  context.rotate(options.transform.rotation * Math.PI / 180)
+  context.scale(options.transform.flipHorizontal ? -placement.scale : placement.scale, placement.scale)
+  context.drawImage(image, -image.naturalWidth / 2, -image.naturalHeight / 2)
+  context.restore()
   return context.getImageData(0, 0, options.width, options.height)
 }
 
-export function processImageData(imageData: PixelImageData, options: ProcessOptions): BeadPattern {
+export function processImageData(imageData: PixelImageData, options: ProcessOptions, availableColors: BeadColor[] = MARD_PALETTE): BeadPattern {
   const expectedLength = options.width * options.height * 4
   if (imageData.width !== options.width || imageData.height !== options.height || imageData.data.length !== expectedLength) {
     throw new Error('像素数据尺寸与图纸尺寸不一致')
@@ -238,7 +235,7 @@ export function processImageData(imageData: PixelImageData, options: ProcessOpti
   for (let i = 0; i < count; i += 1) {
     if (alpha[i] >= 32 && !background[i]) labs.push(rgbToLab(pixels[i]))
   }
-  const palette = choosePalette(labs, options.maxColors)
+  const palette = choosePalette(labs, options.maxColors, availableColors)
   const cells: PatternCell[] = new Array(count)
 
   if (options.dither && palette.length) {
@@ -297,6 +294,6 @@ export function processImageData(imageData: PixelImageData, options: ProcessOpti
   return { width: options.width, height: options.height, cells, usage, totalBeads }
 }
 
-export function processImage(image: HTMLImageElement, options: ProcessOptions): BeadPattern {
-  return processImageData(sampleImage(image, options), options)
+export function processImage(image: HTMLImageElement, options: ProcessOptions, availableColors: BeadColor[] = MARD_PALETTE): BeadPattern {
+  return processImageData(sampleImage(image, options), options, availableColors)
 }
