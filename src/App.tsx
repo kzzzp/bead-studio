@@ -12,6 +12,7 @@ import {
   Lock,
   Minus,
   Palette,
+  Pencil,
   Plus,
   RotateCcw,
   ShieldCheck,
@@ -21,9 +22,10 @@ import {
   WandSparkles,
   X,
 } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import JSZip from 'jszip'
 import { CutoutEditor } from './CutoutEditor'
+import { PatternEditor } from './PatternEditor'
 import { createFullExportPlan } from './exportSizing'
 import { processImage, type BeadPattern, type ProcessOptions } from './imageProcessing'
 import { cutOutPerson } from './personCutout'
@@ -36,6 +38,12 @@ type SourceImage = {
 }
 
 type PreviewMode = 'pattern' | 'pixel' | 'original'
+
+type PatternHistoryState = {
+  source: BeadPattern | null
+  items: BeadPattern[]
+  index: number
+}
 
 const DEFAULT_OPTIONS: ProcessOptions = {
   width: 40,
@@ -193,6 +201,7 @@ function App() {
   const [isExporting, setIsExporting] = useState(false)
   const [isCuttingOut, setIsCuttingOut] = useState(false)
   const [isEditingCutout, setIsEditingCutout] = useState(false)
+  const [isEditingPattern, setIsEditingPattern] = useState(false)
   const [cutoutInfo, setCutoutInfo] = useState('')
   const [watermarkEnabled, setWatermarkEnabled] = useState(() => window.localStorage.getItem('bead-studio-watermark-enabled') === 'true')
   const [watermarkText, setWatermarkText] = useState(() => window.localStorage.getItem('bead-studio-watermark-text') || DEFAULT_WATERMARK_TEXT)
@@ -219,10 +228,46 @@ function App() {
     window.localStorage.setItem('bead-studio-watermark-opacity', String(watermarkOpacity))
   }, [watermarkOpacity])
 
-  const pattern = useMemo(() => {
+  const generatedPattern = useMemo(() => {
     if (!patternSource) return null
     return processImage(patternSource.image, options)
   }, [patternSource, options])
+  const [patternHistory, setPatternHistory] = useState<PatternHistoryState>({ source: null, items: [], index: -1 })
+  const pattern = generatedPattern && patternHistory.source === generatedPattern
+    ? patternHistory.items[patternHistory.index] ?? generatedPattern
+    : generatedPattern
+
+  useEffect(() => {
+    setPatternHistory(generatedPattern
+      ? { source: generatedPattern, items: [generatedPattern], index: 0 }
+      : { source: null, items: [], index: -1 })
+    setIsEditingPattern(false)
+  }, [generatedPattern])
+
+  const commitPatternEdit = useCallback((next: BeadPattern) => {
+    if (!generatedPattern) return
+    setPatternHistory((current) => {
+      const state = current.source === generatedPattern
+        ? current
+        : { source: generatedPattern, items: [generatedPattern], index: 0 }
+      if (state.items[state.index] === next) return state
+      const items = [...state.items.slice(0, state.index + 1), next].slice(-51)
+      return { source: generatedPattern, items, index: items.length - 1 }
+    })
+  }, [generatedPattern])
+
+  const undoPatternEdit = useCallback(() => {
+    setPatternHistory((current) => current.index > 0 ? { ...current, index: current.index - 1 } : current)
+  }, [])
+
+  const redoPatternEdit = useCallback(() => {
+    setPatternHistory((current) => current.index < current.items.length - 1 ? { ...current, index: current.index + 1 } : current)
+  }, [])
+
+  const resetPatternEdits = useCallback(() => {
+    if (!generatedPattern) return
+    setPatternHistory({ source: generatedPattern, items: [generatedPattern], index: 0 })
+  }, [generatedPattern])
 
   const updateOption = <K extends keyof ProcessOptions>(key: K, value: ProcessOptions[K]) => {
     setOptions((current) => ({ ...current, [key]: value }))
@@ -594,6 +639,7 @@ function App() {
               <button type="button" className={previewMode === 'original' ? 'is-active' : ''} onClick={() => setPreviewMode('original')}><ImageIcon size={14} /> 原图</button>
             </div>
             <div className="preview-actions">
+              <button type="button" className="edit-pattern-button" onClick={() => setIsEditingPattern(true)} disabled={!pattern}><Pencil size={13} /> 精修图纸</button>
               <label className="compact-check"><input type="checkbox" checked={showCodes} onChange={(event) => setShowCodes(event.target.checked)} /><Check size={11} /> 色号</label>
               <label className="compact-check"><input type="checkbox" checked={boardLines} onChange={(event) => setBoardLines(event.target.checked)} /><Check size={11} /> 拼板线</label>
               <span className="toolbar-divider" />
@@ -700,6 +746,19 @@ function App() {
           cutoutImage={cutout.image}
           onApply={applyManualCutout}
           onClose={() => setIsEditingCutout(false)}
+        />
+      )}
+      {pattern && generatedPattern && isEditingPattern && (
+        <PatternEditor
+          pattern={pattern}
+          originalPattern={generatedPattern}
+          canUndo={patternHistory.index > 0}
+          canRedo={patternHistory.index >= 0 && patternHistory.index < patternHistory.items.length - 1}
+          onCommit={commitPatternEdit}
+          onUndo={undoPatternEdit}
+          onRedo={redoPatternEdit}
+          onReset={resetPatternEdits}
+          onClose={() => setIsEditingPattern(false)}
         />
       )}
     </div>
